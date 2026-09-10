@@ -1,4 +1,4 @@
-const CACHE_NAME = 'northstar-local-shell-v2';
+const CACHE_NAME = 'northstar-local-shell-v3';
 const APP_FILES = [
   './',
   './index.html',
