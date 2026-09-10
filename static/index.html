@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="pt-PT">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f4f0e8">
+  <title>Northstar Interview Coach</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Northstar home"><span class="brand-mark">N</span><span>northstar<span class="brand-dot">.</span></span></a>
+      <div class="status-pill"><span id="status-dot" class="status-dot"></span><span id="status-label">A verificar motor</span></div>
+    </header>
+
+    <section id="setup-view" class="view setup-view">
+      <div class="intro-copy">
+        <p class="eyebrow">LIVE INTERVIEW COACH</p>
+        <h1>Entra na conversa<br><em>com clareza.</em></h1>
+        <p class="lede">Prepara uma entrevista com um agente que pergunta, aprofunda e dá feedback enquanto praticas.</p>
+      </div>
+      <form id="setup-form" class="setup-form">
+        <div class="form-heading"><span>01</span><h2>Desenha a sessão</h2></div>
+        <label>Persona do entrevistador<textarea id="persona" rows="2" required>Talent Acquisition Partner e Hiring Manager de uma equipa de ML Platform.</textarea></label>
+        <label>Instruções e comportamentos<textarea id="instructions" rows="3" required>Faz perguntas naturais, alterna entre RH e técnica, aprofunda respostas vagas e dá feedback curto e acionável. Usa STAR quando fizer sentido.</textarea></label>
+        <div class="form-grid">
+          <label>O que evitar<textarea id="avoid" rows="3">Não inventes experiência. Não dês avaliações oficiais. Não faças perguntas agressivas ou irrelevantes.</textarea></label>
+          <label>Informação adicional<textarea id="candidate-context" rows="3" placeholder="CV, empresa, vaga, pontos a praticar..."></textarea></label>
+        </div>
+        <label>Perguntas de partida <span class="hint">uma por linha</span><textarea id="questions" rows="4" required>Fala-me sobre o teu percurso e o que procuras agora.
+Qual foi o projeto técnico de que mais te orgulhas?
+Como explicarias uma falha num sistema de ML em produção?</textarea></label>
+        <button class="primary-button" type="submit"><span>Começar sessão</span><span class="button-arrow">&#8594;</span></button>
+      </form>
+    </section>
+
+    <section id="chat-view" class="view chat-view hidden">
+      <aside class="sidebar">
+        <div class="sidebar-title"><span class="eyebrow">SESSION MAP</span><span id="question-count">0 / 0</span></div>
+        <div id="question-list" class="question-list"></div>
+        <div class="sidebar-bottom"><button id="new-session" class="text-button">+ Nova sessão</button></div>
+      </aside>
+      <section class="conversation-panel">
+        <div class="conversation-head"><div><p class="eyebrow">INTERVIEW ROOM</p><h2 id="conversation-title">A tua sessão</h2></div><button id="end-session" class="end-button">Terminar</button></div>
+        <div id="messages" class="messages" aria-live="polite"></div>
+        <div id="thinking" class="thinking hidden"><span></span><span></span><span></span> a preparar a próxima pergunta</div>
+        <form id="answer-form" class="composer">
+          <textarea id="answer" rows="2" placeholder="Escreve a tua resposta..." aria-label="A tua resposta"></textarea>
+          <div class="composer-actions"><div class="composer-tools"><button type="button" id="voice-input" class="icon-button" title="Usar voz" aria-label="Usar voz">&#127908;</button><button type="button" id="read-aloud" class="icon-button" title="Ler pergunta em voz alta" aria-label="Ler pergunta em voz alta">&#128266;</button><span class="input-hint">Ctrl + Enter para enviar</span></div><button class="send-button" type="submit">Enviar <span>&#8593;</span></button></div>
+        </form>
+      </section>
+      <aside class="insights-panel">
+        <div class="insight-card score-card"><div class="card-label">ÚLTIMA RESPOSTA</div><div class="score-row"><strong id="score">--</strong><span>/ 5</span></div><p id="notes">O feedback aparece aqui depois da tua primeira resposta.</p></div>
+        <div class="insight-card"><div class="card-label">FEEDBACK</div><ul id="feedback-list" class="feedback-list"><li>Responde com exemplos concretos.</li><li>Mostra impacto e reflexão.</li></ul></div>
+        <div class="insight-card followup-card"><div class="card-label">PARA APROFUNDAR</div><div id="followups" class="followups"><p>As perguntas de follow-up aparecem aqui.</p></div></div>
+      </aside>
+    </section>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>
