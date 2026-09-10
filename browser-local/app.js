@@ -18,6 +18,7 @@ function setProgress(value, label) {
 }
 
 async function loadModel() {
+  if (state.generator) return true;
   $('runtime').textContent = 'A descarregar modelo local';
   try {
     if (navigator.storage?.persist) await navigator.storage.persist();
@@ -36,6 +37,7 @@ async function loadModel() {
     localStorage.setItem(`northstar-model:${MODEL_ID}`, 'ready');
     $('runtime').textContent = device === 'webgpu' ? 'Modelo local · WebGPU' : 'Modelo local · WASM';
     $('runtime').className = 'runtime ready';
+    $('setup-form').querySelector('button').textContent = 'Modelo pronto';
     return true;
   } catch (error) {
     $('runtime').textContent = 'Motor local indisponível';
@@ -115,11 +117,19 @@ $('setup-form').addEventListener('submit', async (event) => {
   state.config = { persona: $('persona').value.trim(), instructions: $('instructions').value.trim(), avoid: $('avoid').value.trim(), context: $('context').value.trim() };
   state.questions = $('questions').value.split('\n').map((q) => q.trim()).filter(Boolean);
   if (!state.questions.length) return;
-  $('setup-form').querySelector('button').disabled = true;
-  if (!(await loadModel())) { $('setup-form').querySelector('button').disabled = false; return; }
-  state.index = 0; state.turns = [];
-  setup.classList.add('hidden'); coach.classList.remove('hidden');
-  addMessage('agent', state.questions[0]); renderSteps();
+  const button = $('setup-form').querySelector('button');
+  button.disabled = true;
+  button.textContent = 'A preparar modelo...';
+  try {
+    if (!(await loadModel())) return;
+    state.index = 0; state.turns = [];
+    setup.classList.add('hidden'); coach.classList.remove('hidden');
+    addMessage('agent', state.questions[0]); renderSteps();
+  } finally {
+    button.disabled = false;
+    if (!coach.classList.contains('hidden')) button.textContent = 'Modelo pronto';
+    else if (!state.generator) button.textContent = 'Tentar novamente';
+  }
 });
 
 $('answer-form').addEventListener('submit', async (event) => {
