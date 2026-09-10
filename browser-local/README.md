@@ -15,7 +15,7 @@ Abrir `http://127.0.0.1:4173` e instalar a aplicação pelo menu do browser (`In
 
 ## Publicar no GitHub Pages
 
-O workflow em `../.github/workflows/deploy-pages.yml` publica automaticamente esta pasta.
+O workflow em `../.github/workflows/deploy-pages.yml` publica automaticamente esta pasta na branch `gh-pages`.
 
 No PowerShell, a partir da raiz do projeto:
 
@@ -29,7 +29,7 @@ git remote add origin https://github.com/UTILIZADOR/NOME-DO-REPOSITORIO.git
 git push -u origin main
 ```
 
-No GitHub, abrir `Settings > Pages` e escolher `GitHub Actions` como source. Depois do workflow terminar, o URL será:
+No GitHub, abrir `Settings > Pages`, escolher `Deploy from a branch`, selecionar a branch `gh-pages` e a pasta `/ (root)`, e carregar em `Save`. Depois do workflow terminar, o URL será:
 
 ```text
 https://UTILIZADOR.github.io/NOME-DO-REPOSITORIO/
