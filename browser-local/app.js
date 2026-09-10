@@ -3,7 +3,7 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transfo
 const MODEL_ID = 'onnx-community/Qwen2.5-0.5B-Instruct-ONNX';
 env.allowLocalModels = false;
 env.useBrowserCache = true;
-const state = { generator: null, config: null, questions: [], index: 0, turns: [], summary: '' };
+const state = { generator: null, config: null, questions: [], index: 0, turns: [], summary: '', recognition: null, listeningRequested: false, silenceTimer: null };
 const $ = (id) => document.getElementById(id);
 const setup = $('setup');
 const coach = $('coach');
@@ -112,6 +112,51 @@ function renderReview(result) {
   $('followup').textContent = result.next;
 }
 
+function setupActiveListening() {
+  const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const button = $('listen');
+  if (!Recognition) {
+    button.disabled = true;
+    button.textContent = 'Microfone não suportado';
+    return;
+  }
+  const recognition = new Recognition();
+  recognition.lang = 'pt-PT';
+  recognition.continuous = true;
+  recognition.interimResults = true;
+  recognition.onstart = () => {
+    button.classList.add('active');
+    button.textContent = '● A ouvir';
+    $('listen-status').textContent = 'A ouvir. Faz uma pausa quando terminares.';
+  };
+  recognition.onend = () => {
+    if (state.listeningRequested && $('busy').classList.contains('hidden')) {
+      try { recognition.start(); } catch (_) { }
+    } else {
+      button.classList.remove('active');
+      button.textContent = '🎙 Escuta ativa';
+      $('listen-status').textContent = 'Microfone desligado';
+    }
+  };
+  recognition.onerror = () => { $('listen-status').textContent = 'Microfone indisponível. Podes escrever.'; };
+  recognition.onresult = (event) => {
+    let transcript = '';
+    for (let index = event.resultIndex; index < event.results.length; index += 1) transcript += event.results[index][0].transcript;
+    $('answer').value = `${$('answer').value} ${transcript}`.trim();
+    clearTimeout(state.silenceTimer);
+    if (event.results[event.results.length - 1].isFinal) state.silenceTimer = setTimeout(() => $('answer-form').requestSubmit(), 1500);
+  };
+  state.recognition = recognition;
+  button.addEventListener('click', () => {
+    state.listeningRequested = !state.listeningRequested;
+    if (state.listeningRequested) {
+      try { recognition.start(); } catch (_) { }
+    } else recognition.stop();
+  });
+}
+
+setupActiveListening();
+
 $('setup-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   state.config = { persona: $('persona').value.trim(), instructions: $('instructions').value.trim(), avoid: $('avoid').value.trim(), context: $('context').value.trim() };
@@ -135,6 +180,8 @@ $('setup-form').addEventListener('submit', async (event) => {
 $('answer-form').addEventListener('submit', async (event) => {
   event.preventDefault(); const answer = $('answer').value.trim();
   if (!answer || $('busy').classList.contains('hidden') === false) return;
+  clearTimeout(state.silenceTimer);
+  if (state.listeningRequested) try { state.recognition?.stop(); } catch (_) { }
   addMessage('user', answer); $('answer').value = ''; $('busy').classList.remove('hidden');
   const instant = localRubric(answer);
   renderReview({ score: instant.score, rationale: `${instant.score}/5: avaliação inicial baseada na estrutura da resposta.`, feedback: instant.feedback, next: state.questions[Math.min(state.index + 1, state.questions.length - 1)] || 'Que perguntas tens para mim?' });
@@ -142,6 +189,7 @@ $('answer-form').addEventListener('submit', async (event) => {
   state.turns.push({ question: state.questions[state.index], answer });
   $('busy').classList.add('hidden'); renderReview(result);
   state.index = Math.min(state.index + 1, state.questions.length - 1); addMessage('agent', result.next); renderSteps();
+  if (state.listeningRequested) try { state.recognition?.start(); } catch (_) { }
 });
 $('answer').addEventListener('keydown', (event) => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) $('answer-form').requestSubmit(); });
 $('speak').addEventListener('click', () => { const text = [...document.querySelectorAll('.message.agent .text')].pop()?.textContent; if (text && speechSynthesis) speechSynthesis.speak(new SpeechSynthesisUtterance(text)); });
