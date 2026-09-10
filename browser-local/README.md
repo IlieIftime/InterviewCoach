@@ -60,4 +60,4 @@ Importante: a primeira instalação ainda precisa de uma origem web. Para uso em
 
 Este modo privilegia privacidade e disponibilidade, nao qualidade maxima. Um modelo pequeno pode perder nuances, misturar idiomas ou produzir feedback generico. Para respostas mais profundas, usa o modo servidor com Mistral 7B.
 
-O browser SpeechSynthesis pode ler a pergunta, mas o reconhecimento de voz depende do suporte do navegador. O modelo local nao e usado para Whisper nesta variante.
+O browser SpeechSynthesis pode ler a pergunta, mas o reconhecimento de voz depende do suporte do navegador. No modo `Escuta ativa`, a app continua a ouvir e envia a resposta depois de uma pausa; o botão `Microfone` faz uma gravação explícita para preencher a caixa sem enviar automaticamente. O modelo local nao e usado para Whisper nesta variante.

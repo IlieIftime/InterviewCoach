@@ -3,7 +3,25 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transfo
 const MODEL_ID = 'onnx-community/Qwen2.5-0.5B-Instruct-ONNX';
 env.allowLocalModels = false;
 env.useBrowserCache = true;
-const state = { generator: null, config: null, questions: [], index: 0, turns: [], summary: '', recognition: null, listeningRequested: false, silenceTimer: null };
+const state = {
+  generator: null,
+  config: null,
+  questions: [],
+  index: 0,
+  turns: [],
+  summary: '',
+  recognition: null,
+  recognitionMode: null,
+  recognitionRunning: false,
+  activeListening: false,
+  explicitListening: false,
+  recognitionBaseText: '',
+  finalTranscript: '',
+  interimTranscript: '',
+  silenceTimer: null,
+  restartTimer: null,
+  submitting: false,
+};
 const $ = (id) => document.getElementById(id);
 const setup = $('setup');
 const coach = $('coach');
@@ -112,50 +130,173 @@ function renderReview(result) {
   $('followup').textContent = result.next;
 }
 
-function setupActiveListening() {
+function setVoiceStatus(text) {
+  $('listen-status').textContent = text;
+}
+
+function updateVoiceButtons() {
+  const activeButton = $('listen');
+  const microphoneButton = $('microphone');
+  activeButton.classList.toggle('active', state.activeListening);
+  activeButton.setAttribute('aria-pressed', String(state.activeListening));
+  activeButton.textContent = state.activeListening ? '● A ouvir' : '🎙 Escuta ativa';
+  microphoneButton.classList.toggle('active', state.explicitListening);
+  microphoneButton.setAttribute('aria-pressed', String(state.explicitListening));
+  microphoneButton.textContent = state.explicitListening ? '■ Parar microfone' : '🎤 Microfone';
+}
+
+function clearVoiceTimers() {
+  clearTimeout(state.silenceTimer);
+  clearTimeout(state.restartTimer);
+  state.silenceTimer = null;
+  state.restartTimer = null;
+}
+
+function renderTranscript() {
+  const text = [state.recognitionBaseText, state.finalTranscript, state.interimTranscript]
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join(' ');
+  $('answer').value = text;
+}
+
+function scheduleActiveRestart() {
+  clearTimeout(state.restartTimer);
+  state.restartTimer = setTimeout(() => {
+    state.restartTimer = null;
+    if (state.activeListening && !state.submitting && $('busy').classList.contains('hidden') && !state.recognitionRunning) {
+      startRecognition('active');
+    }
+  }, 180);
+}
+
+function stopRecognition() {
+  clearTimeout(state.restartTimer);
+  state.restartTimer = null;
+  const recognition = state.recognition;
+  state.recognition = null;
+  state.recognitionRunning = false;
+  if (!recognition) return;
+  try { recognition.stop(); } catch (_) { /* already stopped */ }
+}
+
+function startRecognition(mode) {
   const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  const button = $('listen');
   if (!Recognition) {
-    button.disabled = true;
-    button.textContent = 'Microfone não suportado';
+    $('listen').disabled = true;
+    $('microphone').disabled = true;
+    setVoiceStatus('Microfone não suportado neste browser.');
     return;
   }
+
+  if (state.recognitionRunning) return;
   const recognition = new Recognition();
   recognition.lang = 'pt-PT';
-  recognition.continuous = true;
+  recognition.continuous = mode === 'active';
   recognition.interimResults = true;
+  recognition.maxAlternatives = 1;
+  state.recognition = recognition;
+  state.recognitionMode = mode;
+  state.recognitionBaseText = $('answer').value.trim();
+  state.finalTranscript = '';
+  state.interimTranscript = '';
+
   recognition.onstart = () => {
-    button.classList.add('active');
-    button.textContent = '● A ouvir';
-    $('listen-status').textContent = 'A ouvir. Faz uma pausa quando terminares.';
+    state.recognitionRunning = true;
+    updateVoiceButtons();
+    setVoiceStatus(mode === 'active' ? 'A ouvir. Uma pausa envia a resposta.' : 'A gravar. Clica novamente para terminar.');
   };
   recognition.onend = () => {
-    if (state.listeningRequested && $('busy').classList.contains('hidden')) {
-      try { recognition.start(); } catch (_) { }
-    } else {
-      button.classList.remove('active');
-      button.textContent = '🎙 Escuta ativa';
-      $('listen-status').textContent = 'Microfone desligado';
+    if (state.recognition !== recognition) return;
+    state.recognitionRunning = false;
+    if (mode === 'active' && state.activeListening && !state.submitting && $('busy').classList.contains('hidden')) {
+      scheduleActiveRestart();
+      return;
+    }
+    if (mode === 'explicit') state.explicitListening = false;
+    updateVoiceButtons();
+    if (!state.activeListening && !state.explicitListening) setVoiceStatus('Microfone desligado');
+  };
+  recognition.onerror = (event) => {
+    if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+      state.activeListening = false;
+      state.explicitListening = false;
+      clearVoiceTimers();
+      updateVoiceButtons();
+      setVoiceStatus('Permissão do microfone recusada. Podes escrever.');
+      return;
+    }
+    if (event.error !== 'aborted') setVoiceStatus('Microfone indisponível. Podes escrever.');
+  };
+  recognition.onresult = (event) => {
+    let finalText = '';
+    let interimText = '';
+    for (let index = event.resultIndex; index < event.results.length; index += 1) {
+      if (event.results[index].isFinal) finalText += event.results[index][0].transcript;
+      else interimText += event.results[index][0].transcript;
+    }
+    state.finalTranscript += finalText;
+    state.interimTranscript = interimText;
+    renderTranscript();
+    clearTimeout(state.silenceTimer);
+    if (mode === 'active' && finalText.trim()) {
+      state.silenceTimer = setTimeout(() => $('answer-form').requestSubmit(), 1500);
     }
   };
-  recognition.onerror = () => { $('listen-status').textContent = 'Microfone indisponível. Podes escrever.'; };
-  recognition.onresult = (event) => {
-    let transcript = '';
-    for (let index = event.resultIndex; index < event.results.length; index += 1) transcript += event.results[index][0].transcript;
-    $('answer').value = `${$('answer').value} ${transcript}`.trim();
+  try {
+    recognition.start();
+  } catch (_) {
+    state.recognitionRunning = false;
+    state.activeListening = false;
+    state.explicitListening = false;
+    updateVoiceButtons();
+    setVoiceStatus('Não foi possível iniciar o microfone.');
+  }
+}
+
+function setupVoiceControls() {
+  const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!Recognition) {
+    $('listen').disabled = true;
+    $('microphone').disabled = true;
+    setVoiceStatus('Microfone não suportado neste browser.');
+    return;
+  }
+
+  $('listen').addEventListener('click', () => {
     clearTimeout(state.silenceTimer);
-    if (event.results[event.results.length - 1].isFinal) state.silenceTimer = setTimeout(() => $('answer-form').requestSubmit(), 1500);
-  };
-  state.recognition = recognition;
-  button.addEventListener('click', () => {
-    state.listeningRequested = !state.listeningRequested;
-    if (state.listeningRequested) {
-      try { recognition.start(); } catch (_) { }
-    } else recognition.stop();
+    if (state.activeListening) {
+      state.activeListening = false;
+      stopRecognition();
+      updateVoiceButtons();
+      if (!state.explicitListening) setVoiceStatus('Microfone desligado');
+      return;
+    }
+    state.activeListening = true;
+    state.explicitListening = false;
+    stopRecognition();
+    updateVoiceButtons();
+    startRecognition('active');
+  });
+
+  $('microphone').addEventListener('click', () => {
+    clearTimeout(state.silenceTimer);
+    if (state.explicitListening) {
+      state.explicitListening = false;
+      stopRecognition();
+      updateVoiceButtons();
+      if (!state.activeListening) setVoiceStatus('Microfone desligado');
+      return;
+    }
+    state.activeListening = false;
+    state.explicitListening = true;
+    stopRecognition();
+    updateVoiceButtons();
+    startRecognition('explicit');
   });
 }
 
-setupActiveListening();
+setupVoiceControls();
 
 $('setup-form').addEventListener('submit', async (event) => {
   event.preventDefault();
@@ -179,17 +320,26 @@ $('setup-form').addEventListener('submit', async (event) => {
 
 $('answer-form').addEventListener('submit', async (event) => {
   event.preventDefault(); const answer = $('answer').value.trim();
-  if (!answer || $('busy').classList.contains('hidden') === false) return;
+  if (!answer || $('busy').classList.contains('hidden') === false || state.submitting) return;
   clearTimeout(state.silenceTimer);
-  if (state.listeningRequested) try { state.recognition?.stop(); } catch (_) { }
+  state.submitting = true;
+  stopRecognition();
   addMessage('user', answer); $('answer').value = ''; $('busy').classList.remove('hidden');
   const instant = localRubric(answer);
   renderReview({ score: instant.score, rationale: `${instant.score}/5: avaliação inicial baseada na estrutura da resposta.`, feedback: instant.feedback, next: state.questions[Math.min(state.index + 1, state.questions.length - 1)] || 'Que perguntas tens para mim?' });
-  const result = await coachAnswer(answer);
-  state.turns.push({ question: state.questions[state.index], answer });
-  $('busy').classList.add('hidden'); renderReview(result);
-  state.index = Math.min(state.index + 1, state.questions.length - 1); addMessage('agent', result.next); renderSteps();
-  if (state.listeningRequested) try { state.recognition?.start(); } catch (_) { }
+  try {
+    const result = await coachAnswer(answer);
+    state.turns.push({ question: state.questions[state.index], answer });
+    renderReview(result);
+    state.index = Math.min(state.index + 1, state.questions.length - 1); addMessage('agent', result.next); renderSteps();
+  } catch (error) {
+    renderReview({ score: instant.score, rationale: 'A resposta foi guardada, mas o modelo não conseguiu gerar feedback.', feedback: instant.feedback, next: state.questions[Math.min(state.index + 1, state.questions.length - 1)] || 'Que perguntas tens para mim?' });
+    setVoiceStatus(`Erro do modelo: ${error.message || 'tenta novamente.'}`);
+  } finally {
+    state.submitting = false;
+    $('busy').classList.add('hidden');
+    if (state.activeListening) scheduleActiveRestart();
+  }
 });
 $('answer').addEventListener('keydown', (event) => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) $('answer-form').requestSubmit(); });
 $('speak').addEventListener('click', () => { const text = [...document.querySelectorAll('.message.agent .text')].pop()?.textContent; if (text && speechSynthesis) speechSynthesis.speak(new SpeechSynthesisUtterance(text)); });

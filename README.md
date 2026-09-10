@@ -323,7 +323,7 @@ And thank you again to a16z for their generous grant.
 
 The files `app.py`, `cli.py`, `agent_prompt.txt`, and `test_session.ps1` provide the local interview coach API.
 
-The browser app is available at `http://127.0.0.1:8000`. It includes session design (persona, behaviours, avoid rules, candidate context and questions), a responsive live chat, WebSocket transport, voice input when supported by the browser, browser text-to-speech, feedback, score and follow-ups.
+The browser app is available at `http://127.0.0.1:8000`. It includes session design (persona, behaviours, avoid rules, candidate context and questions), a responsive live chat, WebSocket transport, active listening when supported by the browser, an explicit microphone button for dictation, browser text-to-speech, feedback, score and follow-ups.
 
 ### Architecture
 

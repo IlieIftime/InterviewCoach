@@ -47,7 +47,7 @@ Como explicarias uma falha num sistema de ML em produção?</textarea></label>
         <div id="thinking" class="thinking hidden"><span></span><span></span><span></span> a preparar a próxima pergunta</div>
         <form id="answer-form" class="composer">
           <textarea id="answer" rows="2" placeholder="Escreve a tua resposta..." aria-label="A tua resposta"></textarea>
-          <div class="composer-actions"><div class="composer-tools"><button type="button" id="voice-input" class="icon-button" title="Usar voz" aria-label="Usar voz">&#127908;</button><button type="button" id="read-aloud" class="icon-button" title="Ler pergunta em voz alta" aria-label="Ler pergunta em voz alta">&#128266;</button><span class="input-hint">Ctrl + Enter para enviar</span></div><button class="send-button" type="submit">Enviar <span>&#8593;</span></button></div>
+          <div class="composer-actions"><div class="composer-tools"><button type="button" id="active-listening" class="voice-mode-button" aria-pressed="false">Escuta ativa</button><button type="button" id="voice-input" class="voice-mic-button" title="Ditar resposta" aria-label="Ditar resposta" aria-pressed="false">&#127908; Microfone</button><button type="button" id="read-aloud" class="icon-button" title="Ler pergunta em voz alta" aria-label="Ler pergunta em voz alta">&#128266;</button><span id="voice-status" class="input-hint" aria-live="polite">Microfone desligado</span><span class="input-hint">Ctrl + Enter para enviar</span></div><button class="send-button" type="submit">Enviar <span>&#8593;</span></button></div>
         </form>
       </section>
       <aside class="insights-panel">
