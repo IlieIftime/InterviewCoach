@@ -16,6 +16,20 @@ const state = {
     silenceTimer: null,
     restartTimer: null,
     speechEnabled: true,
+    speaking: false,
+    localRecorder: null,
+    localStream: null,
+    localChunks: [],
+    localMimeType: '',
+    localCancel: false,
+    localSubmit: false,
+    localProcessing: false,
+    localAnalyser: null,
+    localAudioContext: null,
+    localFrame: null,
+    localStartedAt: 0,
+    localLastVoiceAt: 0,
+    localHadSpeech: false,
   },
 };
 const $ = (id) => document.getElementById(id);
@@ -113,6 +127,7 @@ $('answer-form').addEventListener('submit', (event) => {
   const text = $('answer').value.trim();
   if (!text || state.answerPending || !state.socket || state.socket.readyState !== WebSocket.OPEN) return;
   state.answerPending = true;
+  cancelAgentSpeech();
   clearTimeout(state.voice.silenceTimer);
   stopVoiceRecognition();
   addMessage('user', text);
@@ -133,6 +148,7 @@ $('read-aloud').addEventListener('click', () => {
 function speakAgent(text) {
   if (!state.voice.speechEnabled || !text || !('speechSynthesis' in window)) return;
   speechSynthesis.cancel();
+  state.voice.speaking = true;
   const utterance = new SpeechSynthesisUtterance(text);
   utterance.lang = 'pt-PT';
   utterance.rate = 0.96;
@@ -141,7 +157,18 @@ function speakAgent(text) {
   utterance.voice = voices.find((voice) => voice.lang.toLowerCase() === 'pt-pt')
     || voices.find((voice) => voice.lang.toLowerCase().startsWith('pt'))
     || null;
+  const finishSpeech = () => {
+    state.voice.speaking = false;
+    if (state.voice.activeRequested && !state.answerPending) scheduleActiveVoiceRestart();
+  };
+  utterance.onend = finishSpeech;
+  utterance.onerror = finishSpeech;
   speechSynthesis.speak(utterance);
+}
+
+function cancelAgentSpeech() {
+  if ('speechSynthesis' in window) speechSynthesis.cancel();
+  state.voice.speaking = false;
 }
 
 function voiceRecognitionConstructor() {
@@ -181,10 +208,180 @@ function renderVoiceTranscript() {
     .join(' ');
 }
 
-function stopVoiceRecognition() {
+function localVoiceSupported() {
+  return Boolean(navigator.mediaDevices?.getUserMedia && window.MediaRecorder);
+}
+
+function localVoiceMimeType() {
+  const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus'];
+  return candidates.find((type) => MediaRecorder.isTypeSupported(type)) || '';
+}
+
+function stopLocalAudioMonitor() {
+  const voice = state.voice;
+  if (voice.localFrame) cancelAnimationFrame(voice.localFrame);
+  voice.localFrame = null;
+  voice.localAnalyser = null;
+  if (voice.localAudioContext) {
+    voice.localAudioContext.close().catch(() => {});
+    voice.localAudioContext = null;
+  }
+}
+
+function monitorLocalSilence() {
+  const voice = state.voice;
+  if (!voice.localRecorder || voice.mode !== 'active') return;
+  const analyser = voice.localAnalyser;
+  if (analyser) {
+    const data = new Uint8Array(analyser.fftSize);
+    analyser.getByteTimeDomainData(data);
+    const rms = Math.sqrt(data.reduce((sum, value) => sum + ((value - 128) / 128) ** 2, 0) / data.length);
+    if (rms > 0.035) {
+      voice.localHadSpeech = true;
+      voice.localLastVoiceAt = Date.now();
+    }
+    const elapsed = Date.now() - voice.localStartedAt;
+    if (voice.localHadSpeech && elapsed > 900 && Date.now() - voice.localLastVoiceAt > 1100) {
+      finishLocalRecording(true);
+      return;
+    }
+  }
+  voice.localFrame = requestAnimationFrame(monitorLocalSilence);
+}
+
+function bytesToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+  }
+  return btoa(binary);
+}
+
+async function submitLocalAudio(blob, mimeType) {
+  const voice = state.voice;
+  voice.localProcessing = true;
+  setVoiceStatus('A transcrever localmente...');
+  try {
+    const format = mimeType.includes('ogg') ? 'ogg' : 'webm';
+    const response = await fetch('/transcribe', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({audio_base64: bytesToBase64(await blob.arrayBuffer()), audio_format: format}),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.detail || 'STT local indisponível.');
+    voice.finalText = String(result.text || '').trim();
+    voice.interimText = '';
+    renderVoiceTranscript();
+    if (!voice.finalText) {
+      setVoiceStatus('Não ouvi uma resposta. Podes repetir.');
+      if (voice.activeRequested) scheduleActiveVoiceRestart();
+      return;
+    }
+    if (voice.mode === 'active') {
+      $('answer-form').requestSubmit();
+    } else {
+      voice.explicitRequested = false;
+      updateVoiceControls();
+      setVoiceStatus('Transcrição pronta. Confirma com Enviar.');
+    }
+  } catch (error) {
+    setVoiceStatus(`STT local indisponível: ${error.message || 'tenta escrever.'}`);
+    if (voice.activeRequested) scheduleActiveVoiceRestart();
+  } finally {
+    voice.localProcessing = false;
+  }
+}
+
+function finishLocalRecording(submitAudio) {
+  const voice = state.voice;
+  const recorder = voice.localRecorder;
+  if (!recorder || recorder.state === 'inactive') return;
+  voice.localCancel = !submitAudio;
+  voice.localSubmit = submitAudio;
+  try { recorder.stop(); } catch (_) { /* already stopped */ }
+}
+
+async function startLocalRecognition(mode) {
+  const voice = state.voice;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true},
+    });
+    const mimeType = localVoiceMimeType();
+    const recorder = mimeType ? new MediaRecorder(stream, {mimeType}) : new MediaRecorder(stream);
+    voice.localRecorder = recorder;
+    voice.localStream = stream;
+    voice.localChunks = [];
+    voice.localMimeType = mimeType || recorder.mimeType || 'audio/webm';
+    voice.localCancel = false;
+    voice.localSubmit = false;
+    voice.localStartedAt = Date.now();
+    voice.localLastVoiceAt = voice.localStartedAt;
+    voice.localHadSpeech = false;
+    voice.baseText = $('answer').value.trim();
+    voice.finalText = '';
+    voice.interimText = '';
+    voice.mode = mode;
+    voice.running = true;
+    updateVoiceControls();
+    setVoiceStatus(mode === 'active' ? 'A ouvir localmente. Faz uma pausa para enviar.' : 'A gravar localmente. Clica para terminar.');
+
+    recorder.ondataavailable = (event) => {
+      if (event.data.size > 0) voice.localChunks.push(event.data);
+    };
+    recorder.onerror = () => setVoiceStatus('Erro na captura de áudio.');
+    recorder.onstop = async () => {
+      const shouldSubmit = voice.localSubmit && !voice.localCancel;
+      const blob = new Blob(voice.localChunks, {type: voice.localMimeType});
+      stream.getTracks().forEach((track) => track.stop());
+      stopLocalAudioMonitor();
+      voice.localRecorder = null;
+      voice.localStream = null;
+      voice.localChunks = [];
+      voice.running = false;
+      voice.localSubmit = false;
+      if (shouldSubmit && blob.size > 0) await submitLocalAudio(blob, voice.localMimeType);
+      else if (!voice.activeRequested && !voice.explicitRequested) setVoiceStatus('Microfone desligado');
+      updateVoiceControls();
+    };
+    recorder.start(250);
+
+    if (mode === 'active') {
+      const AudioContext = window.AudioContext || window.webkitAudioContext;
+      if (AudioContext) {
+        voice.localAudioContext = new AudioContext();
+        const source = voice.localAudioContext.createMediaStreamSource(stream);
+        voice.localAnalyser = voice.localAudioContext.createAnalyser();
+        voice.localAnalyser.fftSize = 512;
+        source.connect(voice.localAnalyser);
+        voice.localFrame = requestAnimationFrame(monitorLocalSilence);
+      }
+    }
+  } catch (error) {
+    voice.localRecorder = null;
+    voice.localStream?.getTracks().forEach((track) => track.stop());
+    voice.localStream = null;
+    voice.running = false;
+    voice.activeRequested = false;
+    voice.explicitRequested = false;
+    updateVoiceControls();
+    setVoiceStatus(error.name === 'NotAllowedError' ? 'Permissão do microfone recusada.' : 'Não foi possível iniciar o áudio local.');
+  }
+}
+
+function stopVoiceRecognition(options = {}) {
   const voice = state.voice;
   clearTimeout(voice.restartTimer);
   voice.restartTimer = null;
+  if (voice.localRecorder) {
+    voice.localCancel = !options.submitAudio;
+    voice.localSubmit = Boolean(options.submitAudio);
+    try { voice.localRecorder.stop(); } catch (_) { /* already stopped */ }
+    return;
+  }
   const recognition = voice.recognition;
   voice.recognition = null;
   voice.running = false;
@@ -198,13 +395,13 @@ function scheduleActiveVoiceRestart() {
   clearTimeout(voice.restartTimer);
   voice.restartTimer = setTimeout(() => {
     voice.restartTimer = null;
-    if (voice.activeRequested && !state.answerPending && $('thinking').classList.contains('hidden') && !voice.running) {
+    if (voice.activeRequested && !state.answerPending && !voice.localProcessing && !voice.speaking && $('thinking').classList.contains('hidden') && !voice.running) {
       startVoiceRecognition('active');
     }
   }, 180);
 }
 
-function startVoiceRecognition(mode) {
+function startBrowserRecognition(mode) {
   const SpeechRecognition = voiceRecognitionConstructor();
   if (!SpeechRecognition) {
     $('active-listening').disabled = true;
@@ -279,8 +476,16 @@ function startVoiceRecognition(mode) {
   }
 }
 
+function startVoiceRecognition(mode) {
+  if (localVoiceSupported()) {
+    startLocalRecognition(mode);
+    return;
+  }
+  startBrowserRecognition(mode);
+}
+
 function setupVoiceControls() {
-  if (!voiceRecognitionConstructor()) {
+  if (!localVoiceSupported() && !voiceRecognitionConstructor()) {
     $('active-listening').disabled = true;
     $('voice-input').disabled = true;
     setVoiceStatus('Microfone não suportado neste browser.');
@@ -289,6 +494,7 @@ function setupVoiceControls() {
   $('active-listening').addEventListener('click', () => {
     const voice = state.voice;
     clearTimeout(voice.silenceTimer);
+    cancelAgentSpeech();
     if (voice.activeRequested) {
       voice.activeRequested = false;
       stopVoiceRecognition();
@@ -306,9 +512,10 @@ function setupVoiceControls() {
   $('voice-input').addEventListener('click', () => {
     const voice = state.voice;
     clearTimeout(voice.silenceTimer);
+    cancelAgentSpeech();
     if (voice.explicitRequested) {
       voice.explicitRequested = false;
-      stopVoiceRecognition();
+      stopVoiceRecognition({submitAudio: true});
       updateVoiceControls();
       if (!voice.activeRequested) setVoiceStatus('Microfone desligado');
       return;
@@ -335,6 +542,7 @@ async function endSession() {
   state.socket = null;
   state.sessionId = null;
   if ('speechSynthesis' in window) speechSynthesis.cancel();
+  state.voice.speaking = false;
   updateVoiceControls();
   setVoiceStatus('Microfone desligado');
   chatView.classList.add('hidden');

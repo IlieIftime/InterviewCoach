@@ -5,4 +5,5 @@ langchain-core>=0.3,<1
 requests>=2.32,<3
 python-dotenv>=1,<2
 pydantic>=2,<3
-# Optional audio input: pip install openai-whisper soundfile
+# Local STT: the first voice request downloads the selected Whisper model.
+openai-whisper>=20250625

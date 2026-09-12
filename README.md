@@ -323,7 +323,7 @@ And thank you again to a16z for their generous grant.
 
 The files `app.py`, `cli.py`, `agent_prompt.txt`, and `test_session.ps1` provide the local interview coach API.
 
-The browser app is available at `http://127.0.0.1:8000`. It includes session design (persona, behaviours, avoid rules, candidate context and questions), a responsive live chat, WebSocket transport, active listening when supported by the browser, an explicit microphone button for dictation, browser text-to-speech, feedback, score and follow-ups.
+The browser app is available at `http://127.0.0.1:8000`. It includes session design (persona, behaviours, avoid rules, candidate context and questions), a responsive live chat, WebSocket transport, local audio capture with Whisper STT, active listening with local silence detection, an explicit microphone button for dictation, browser/system text-to-speech, feedback, score and follow-ups. Browser speech recognition remains a fallback when local audio capture is unavailable.
 
 ### Architecture
 
@@ -368,6 +368,8 @@ Start Ollama from `C:\Users\iliei\AppData\Local\Programs\Ollama` if it is not al
 ollama pull qwen2.5:1.5b-instruct
 uvicorn app:app --reload --host 0.0.0.0 --port 8000
 ```
+
+The API preloads Whisper in the background. The first start uses `WHISPER_MODEL=tiny` by default and downloads that model to the local Whisper cache. `C:\tools\ffmpeg.exe` is detected automatically on this machine. Use `WHISPER_MODEL=base` when recognition quality matters more than latency, or `WARMUP_WHISPER=0` to disable preloading.
 
 ### Option B: local llama.cpp server with the same Qwen GGUF
 
@@ -438,7 +440,7 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8000/ask `
   -Body (@{ session_id = $start.session_id; text_answer = "I built a cheque validation pipeline with computer vision and CI/CD." } | ConvertTo-Json)
 ```
 
-For audio, base64-encode a WAV file and send it as `audio_base64` with `audio_format = "wav"`. Whisper loads lazily on the first audio request. Text input works without Whisper. For live text exchange, connect a WebSocket to `ws://127.0.0.1:8000/ws/{session_id}` and send `{"text_answer":"..."}`.
+For audio, base64-encode a WAV/WebM file and send it as `audio_base64` with its `audio_format`, either to `/transcribe` for local STT or to `/ask` for transcription plus coaching. Whisper loads lazily on the first audio request. Text input works without Whisper. For live text exchange, connect a WebSocket to `ws://127.0.0.1:8000/ws/{session_id}` and send `{"text_answer":"..."}`.
 
 ### Option C: browser-local small model
 

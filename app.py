@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import tempfile
+import threading
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -60,6 +61,11 @@ class AskRequest(BaseModel):
     audio_format: str = "wav"
 
 
+class TranscribeRequest(BaseModel):
+    audio_base64: str = Field(min_length=1)
+    audio_format: str = "webm"
+
+
 class StopRequest(BaseModel):
     session_id: str
 
@@ -88,6 +94,11 @@ def project_path(filename: str) -> Path:
 
 
 session_store = SessionStore(project_path("sessions.db"))
+WHISPER_MODEL_CACHE: dict[str, Any] = {}
+WHISPER_MODEL_LOCK = threading.Lock()
+FFMPEG_DIR = Path(r"C:\tools")
+if (FFMPEG_DIR / "ffmpeg.exe").exists():
+    os.environ["PATH"] = f"{FFMPEG_DIR}{os.pathsep}{os.environ.get('PATH', '')}"
 
 
 def build_prompt(session: Session, candidate_text: str) -> str:
@@ -238,22 +249,55 @@ def usable_question(value: Any) -> str:
     return question
 
 
+def get_whisper_model() -> Any:
+    import whisper
+
+    model_name = os.getenv("WHISPER_MODEL", "tiny")
+    with WHISPER_MODEL_LOCK:
+        model = WHISPER_MODEL_CACHE.get(model_name)
+        if model is None:
+            model = whisper.load_model(model_name)
+            WHISPER_MODEL_CACHE[model_name] = model
+    return model
+
+
+async def warm_whisper_model() -> None:
+    if os.getenv("WARMUP_WHISPER", "1") == "1":
+        try:
+            await asyncio.to_thread(get_whisper_model)
+        except Exception:
+            pass
+
+
+@app.on_event("startup")
+async def preload_local_voice() -> None:
+    asyncio.create_task(warm_whisper_model())
+
+
 def transcribe_audio(encoded: str, audio_format: str) -> str:
     try:
         import whisper
     except ImportError as exc:
         raise HTTPException(400, "Whisper não está instalado; envia text_answer ou instala openai-whisper.") from exc
     try:
-        audio_bytes = base64.b64decode(encoded)
+        audio_bytes = base64.b64decode(encoded, validate=True)
     except ValueError as exc:
         raise HTTPException(400, "audio_base64 inválido") from exc
-    suffix = "." + audio_format.lstrip(".")
+    safe_format = "".join(character for character in audio_format.lower() if character.isalnum()) or "wav"
+    suffix = "." + safe_format
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as audio_file:
         audio_file.write(audio_bytes)
         audio_path = Path(audio_file.name)
     try:
-        model = whisper.load_model(os.getenv("WHISPER_MODEL", "base"))
-        return str(model.transcribe(str(audio_path))["text"]).strip()
+        model = get_whisper_model()
+        result = model.transcribe(
+            str(audio_path),
+            language=os.getenv("WHISPER_LANGUAGE", "pt"),
+            fp16=False,
+            temperature=0,
+            condition_on_previous_text=False,
+        )
+        return str(result.get("text", "")).strip()
     finally:
         audio_path.unlink(missing_ok=True)
 
@@ -285,6 +329,12 @@ def status() -> dict[str, Any]:
     return backend_status()
 
 
+@app.post("/transcribe")
+def transcribe(payload: TranscribeRequest) -> dict[str, str]:
+    text = transcribe_audio(payload.audio_base64, payload.audio_format)
+    return {"text": text, "model": os.getenv("WHISPER_MODEL", "tiny")}
+
+
 @app.get("/health")
 def health() -> dict[str, Any]:
     model = backend_status()
@@ -292,6 +342,11 @@ def health() -> dict[str, Any]:
         "ok": True,
         "model": model,
         "configured_backend": os.getenv("LLM_BACKEND", DEFAULT_BACKEND),
+        "voice": {
+            "backend": "whisper-local",
+            "model": os.getenv("WHISPER_MODEL", "tiny"),
+            "ready": os.getenv("WHISPER_MODEL", "tiny") in WHISPER_MODEL_CACHE,
+        },
         "active_sessions": session_store.count(),
     }
 
