@@ -21,10 +21,14 @@ class SessionStore:
                     candidate_context TEXT NOT NULL,
                     questions TEXT NOT NULL,
                     current_index INTEGER NOT NULL,
-                    history TEXT NOT NULL
+                    history TEXT NOT NULL,
+                    pending_question TEXT
                 )
                 """
             )
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(sessions)")}
+            if "pending_question" not in columns:
+                connection.execute("ALTER TABLE sessions ADD COLUMN pending_question TEXT")
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.database_path, timeout=10)
@@ -35,7 +39,10 @@ class SessionStore:
         with self._connect() as connection:
             connection.execute(
                 """
-                INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO sessions (
+                    session_id, persona, instructions, avoid, candidate_context,
+                    questions, current_index, history, pending_question
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(session_id) DO UPDATE SET
                     persona=excluded.persona,
                     instructions=excluded.instructions,
@@ -43,7 +50,8 @@ class SessionStore:
                     candidate_context=excluded.candidate_context,
                     questions=excluded.questions,
                     current_index=excluded.current_index,
-                    history=excluded.history
+                    history=excluded.history,
+                    pending_question=excluded.pending_question
                 """,
                 (
                     session_id,
@@ -54,6 +62,7 @@ class SessionStore:
                     json.dumps(session.questions, ensure_ascii=False),
                     session.current_index,
                     json.dumps(session.history, ensure_ascii=False),
+                    session.pending_question,
                 ),
             )
 
@@ -70,6 +79,7 @@ class SessionStore:
             questions=json.loads(row["questions"]),
             current_index=row["current_index"],
             history=json.loads(row["history"]),
+            pending_question=row["pending_question"],
         )
 
     def delete(self, session_id: str) -> None:

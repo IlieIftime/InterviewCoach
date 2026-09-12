@@ -25,8 +25,12 @@ try:
 except ImportError:  # pragma: no cover - requirements.txt installs it
     ChatPromptTemplate = None
 
-app = FastAPI(title="Live Interview Coach", version="0.2.0")
+app = FastAPI(title="Live Interview Coach", version="0.3.0")
 app.mount("/static", StaticFiles(directory=Path(__file__).resolve().parent / "static"), name="static")
+
+DEFAULT_OLLAMA_MODEL = "qwen2.5:1.5b-instruct"
+DEFAULT_BACKEND = "ollama"
+MAX_PROMPT_HISTORY = 3600
 
 
 @dataclass
@@ -38,6 +42,7 @@ class Session:
     questions: list[str]
     current_index: int = 0
     history: list[dict[str, str]] = field(default_factory=list)
+    pending_question: str | None = None
 
 
 class StartRequest(BaseModel):
@@ -60,18 +65,21 @@ class StopRequest(BaseModel):
 
 
 PROMPT = """SYSTEM:
-You are an expert interview coach for Machine Learning Platform Engineer roles. Be natural, curious, and concise. Ask follow-ups, give constructive feedback, and score answers from 0 to 5. Keep the JSON response under 120 tokens. Return valid JSON only.
+És um entrevistador e coach experiente: caloroso, perspicaz, natural e conciso. A conversa é em português de Portugal. Analisa a resposta do candidato no contexto da conversa. Se estiver vaga ou incompleta, faz uma pergunta de follow-up concreta; só avança para a próxima pergunta planeada quando a resposta estiver suficientemente coberta. Todas as frases em feedback, followups, next_question e notes devem ser em português de Portugal. Devolve apenas JSON válido, sem markdown nem texto adicional.
 
 USER:
 Persona: {persona}
-Instructions: {instructions}
-Avoid: {avoid}
-Additional candidate information: {candidate_context}
-Current question: {current_question}
-Candidate answer: {candidate_text}
+Instruções: {instructions}
+Evitar: {avoid}
+Informação adicional sobre o candidato: {candidate_context}
+Conversa recente:
+{history}
+Pergunta atual: {current_question}
+Resposta do candidato: {candidate_text}
+Próxima pergunta planeada (usa-a apenas se não for necessário follow-up): {next_question_hint}
 
-Produce JSON with exactly these keys:
-{{"feedback": ["bullet 1", "bullet 2"], "followups": ["question"], "next_question": "question", "score": 0, "notes": "one-sentence rationale"}}
+Produz JSON exatamente com estas chaves. Mantém feedback com no máximo dois itens curtos, followups com no máximo uma pergunta e notes numa frase curta:
+{{"feedback": ["ponto 1", "ponto 2"], "followups": ["pergunta"], "next_question": "follow-up ou próxima pergunta planeada", "score": 0, "notes": "justificação numa frase"}}
 """
 
 
@@ -83,24 +91,22 @@ session_store = SessionStore(project_path("sessions.db"))
 
 
 def build_prompt(session: Session, candidate_text: str) -> str:
-    question = session.questions[session.current_index]
-    if ChatPromptTemplate is not None:
-        template = ChatPromptTemplate.from_template(PROMPT)
-        return template.format(
-            persona=session.persona,
-            instructions=session.instructions,
-            avoid=session.avoid,
-            candidate_context=session.candidate_context,
-            current_question=question,
-            candidate_text=candidate_text,
-        )
+    question = session.pending_question or session.questions[session.current_index]
+    next_index = min(session.current_index + 1, len(session.questions) - 1)
+    next_question = session.questions[next_index] if session.questions and next_index < len(session.questions) else "Que perguntas tens para mim?"
+    history = "\n".join(
+        f"Turn {index}: Question: {turn.get('question', '')}\nAnswer: {turn.get('answer', '')}"
+        for index, turn in enumerate(session.history[-6:], start=max(1, len(session.history) - 5))
+    ) or "No previous answers; this is the first turn."
     return PROMPT.format(
         persona=session.persona,
         instructions=session.instructions,
         avoid=session.avoid,
-        candidate_context=session.candidate_context,
+        candidate_context=session.candidate_context[:1600],
+        history=history[:MAX_PROMPT_HISTORY],
         current_question=question,
-        candidate_text=candidate_text,
+        candidate_text=candidate_text[:2200],
+        next_question_hint=next_question,
     )
 
 
@@ -120,25 +126,27 @@ def call_openai_compatible(prompt: str) -> str:
     chat_url = os.getenv("LLAMA_SERVER_URL", "http://127.0.0.1:8080/v1/chat/completions")
     client = requests.Session()
     client.trust_env = False
-    server_root = chat_url.split("/v1/", 1)[0]
     response = client.post(
-        f"{server_root}/completion",
+        chat_url,
         json={
-            "prompt": f"[INST] {prompt} [/INST]",
+            "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.2,
-            "n_predict": 120,
+            "max_tokens": int(os.getenv("LLM_MAX_TOKENS", "320")),
         },
         timeout=180,
     )
     response.raise_for_status()
-    return response.json()["content"]
+    body = response.json()
+    if body.get("choices"):
+        return body["choices"][0]["message"]["content"]
+    return body["content"]
 
 
 def call_ollama(prompt: str) -> dict[str, Any]:
     if os.getenv("LIVE_COACH_FAKE_LLM") == "1":
         raise RuntimeError("fake mode is handled by the endpoint")
-    model = os.getenv("OLLAMA_MODEL", "mistral:7b")
-    backend = os.getenv("LLM_BACKEND", "auto").lower()
+    model = os.getenv("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL)
+    backend = os.getenv("LLM_BACKEND", DEFAULT_BACKEND).lower()
     if backend in {"llama", "llama-server", "llamacpp"}:
         return parse_json(call_openai_compatible(prompt))
 
@@ -151,7 +159,17 @@ def call_ollama(prompt: str) -> dict[str, Any]:
     try:
         response = requests.post(
             os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate"),
-            json={"model": model, "prompt": prompt, "stream": False, "format": "json"},
+            json={
+                "model": model,
+                "prompt": prompt,
+                "stream": False,
+                "format": "json",
+                "options": {
+                    "temperature": 0.2,
+                    "num_ctx": int(os.getenv("LLM_CONTEXT", "4096")),
+                    "num_predict": int(os.getenv("LLM_MAX_TOKENS", "320")),
+                },
+            },
             timeout=180,
         )
         response.raise_for_status()
@@ -202,7 +220,22 @@ def parse_json(raw: str) -> dict[str, Any]:
     result.setdefault("next_question", "")
     result.setdefault("score", 0)
     result.setdefault("notes", "")
+    result["feedback"] = [str(item).strip() for item in result["feedback"] if str(item).strip()][:2] if isinstance(result["feedback"], list) else [str(result["feedback"]).strip()]
+    result["followups"] = [str(item).strip() for item in result["followups"] if str(item).strip()][:1] if isinstance(result["followups"], list) else [str(result["followups"]).strip()]
+    try:
+        result["score"] = max(0, min(5, int(float(result["score"]))))
+    except (TypeError, ValueError):
+        result["score"] = 0
+    result["next_question"] = str(result["next_question"] or "").strip()
+    result["notes"] = str(result["notes"] or "").strip()
     return result
+
+
+def usable_question(value: Any) -> str:
+    question = str(value or "").strip()
+    if len(question) < 12 or question.casefold() in {"pergunta", "question", "follow-up", "followup"}:
+        return ""
+    return question
 
 
 def transcribe_audio(encoded: str, audio_format: str) -> str:
@@ -229,18 +262,22 @@ def backend_status() -> dict[str, Any]:
     configured_llama_url = os.getenv("LLAMA_SERVER_URL", "http://127.0.0.1:8080/v1/chat/completions")
     llama_url = configured_llama_url.split("/v1/", 1)[0] + "/health"
     ollama_url = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434/api/tags")
+    backend = os.getenv("LLM_BACKEND", DEFAULT_BACKEND).lower()
+    model = os.getenv("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL)
     if os.getenv("LIVE_COACH_FAKE_LLM") == "1":
         return {"backend": "demo", "available": True, "label": "Demo mode"}
-    try:
-        requests.get(llama_url, timeout=1).raise_for_status()
-        return {"backend": "llama-server", "available": True, "label": "llama.cpp local"}
-    except requests.RequestException:
-        pass
+    if backend in {"auto", "llama", "llama-server", "llamacpp"}:
+        try:
+            requests.get(llama_url, timeout=1).raise_for_status()
+            return {"backend": "llama-server", "available": True, "model": model, "label": "llama.cpp local"}
+        except requests.RequestException:
+            if backend != "auto":
+                return {"backend": "offline", "available": False, "model": model, "label": "llama.cpp indisponível"}
     try:
         requests.get(ollama_url, timeout=1).raise_for_status()
-        return {"backend": "ollama", "available": True, "label": "Ollama local"}
+        return {"backend": "ollama", "available": True, "model": model, "label": f"Ollama · {model}"}
     except requests.RequestException:
-        return {"backend": "offline", "available": False, "label": "No model connected"}
+        return {"backend": "offline", "available": False, "model": model, "label": "Nenhum modelo ligado"}
 
 
 @app.get("/api/status")
@@ -254,7 +291,7 @@ def health() -> dict[str, Any]:
     return {
         "ok": True,
         "model": model,
-        "configured_backend": os.getenv("LLM_BACKEND", "auto"),
+        "configured_backend": os.getenv("LLM_BACKEND", DEFAULT_BACKEND),
         "active_sessions": session_store.count(),
     }
 
@@ -270,11 +307,11 @@ def start_session(payload: StartRequest) -> dict[str, str]:
         raise HTTPException(422, "A sessão precisa de pelo menos uma pergunta")
     session_id = str(uuid.uuid4())
     session = Session(
-        payload.persona,
-        payload.instructions,
-        payload.avoid,
-        payload.candidate_context,
-        payload.questions,
+        persona=payload.persona,
+        instructions=payload.instructions,
+        avoid=payload.avoid,
+        candidate_context=payload.candidate_context,
+        questions=payload.questions,
     )
     session_store.save(session_id, session)
     return {"session_id": session_id, "current_question": payload.questions[0]}
@@ -288,17 +325,25 @@ def ask(payload: AskRequest) -> dict[str, Any]:
     if not payload.text_answer and not payload.audio_base64:
         raise HTTPException(400, "Envia text_answer ou audio_base64")
     candidate_text = payload.text_answer or transcribe_audio(payload.audio_base64 or "", payload.audio_format)
-    current_question = session.questions[session.current_index]
+    current_question = session.pending_question or session.questions[session.current_index]
     try:
         result = fake_coach(session, candidate_text) if os.getenv("LIVE_COACH_FAKE_LLM") == "1" else call_ollama(build_prompt(session, candidate_text))
     except (OSError, subprocess.SubprocessError, ValueError) as exc:
         raise HTTPException(503, f"LLM indisponível: {exc}") from exc
+    followup = usable_question(result.get("followups", [""])[0] if result.get("followups") else "")
+    next_planned_index = min(session.current_index + 1, len(session.questions) - 1)
+    next_planned = session.questions[next_planned_index] if session.questions and session.current_index + 1 < len(session.questions) else "Obrigado. Que perguntas tens para mim?"
+    if followup:
+        result["next_question"] = followup
+        session.pending_question = followup
+        result["is_followup"] = True
+    else:
+        session.pending_question = None
+        session.current_index = min(session.current_index + 1, len(session.questions) - 1)
+        result["next_question"] = usable_question(result.get("next_question")) or next_planned
+        result["is_followup"] = False
     session.history.append({"question": current_question, "answer": candidate_text})
-    session.current_index = min(session.current_index + 1, len(session.questions) - 1)
     session_store.save(payload.session_id, session)
-    if not result.get("next_question"):
-        next_index = session.current_index
-        result["next_question"] = session.questions[next_index] if next_index < len(session.questions) else "Obrigado. Que perguntas tens para mim?"
     return {"candidate_text": candidate_text, **result}
 
 

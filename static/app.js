@@ -15,6 +15,7 @@ const state = {
     interimText: '',
     silenceTimer: null,
     restartTimer: null,
+    speechEnabled: true,
   },
 };
 const $ = (id) => document.getElementById(id);
@@ -63,6 +64,7 @@ function showSession(start) {
   chatView.classList.remove('hidden');
   $('messages').innerHTML = '';
   addMessage('agent', start.current_question);
+  speakAgent(start.current_question);
   renderQuestions();
   connectSocket();
 }
@@ -76,8 +78,9 @@ function connectSocket() {
     $('thinking').classList.add('hidden');
     updateInsights(result);
     if (result.next_question) {
-      state.current = Math.min(state.current + 1, state.questions.length - 1);
+      if (!result.is_followup) state.current = Math.min(state.current + 1, state.questions.length - 1);
       addMessage('agent', result.next_question);
+      speakAgent(result.next_question);
       renderQuestions();
     }
     scheduleActiveVoiceRestart();
@@ -124,8 +127,22 @@ $('answer').addEventListener('keydown', (event) => {
 
 $('read-aloud').addEventListener('click', () => {
   const latest = [...document.querySelectorAll('.message.agent .message-text')].pop();
-  if (latest && 'speechSynthesis' in window) speechSynthesis.speak(new SpeechSynthesisUtterance(latest.textContent));
+  if (latest) speakAgent(latest.textContent);
 });
+
+function speakAgent(text) {
+  if (!state.voice.speechEnabled || !text || !('speechSynthesis' in window)) return;
+  speechSynthesis.cancel();
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.lang = 'pt-PT';
+  utterance.rate = 0.96;
+  utterance.pitch = 1;
+  const voices = speechSynthesis.getVoices();
+  utterance.voice = voices.find((voice) => voice.lang.toLowerCase() === 'pt-pt')
+    || voices.find((voice) => voice.lang.toLowerCase().startsWith('pt'))
+    || null;
+  speechSynthesis.speak(utterance);
+}
 
 function voiceRecognitionConstructor() {
   return window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -283,6 +300,7 @@ function setupVoiceControls() {
     voice.explicitRequested = false;
     stopVoiceRecognition();
     updateVoiceControls();
+    setVoiceStatus('A iniciar escuta ativa...');
     startVoiceRecognition('active');
   });
   $('voice-input').addEventListener('click', () => {
@@ -299,6 +317,7 @@ function setupVoiceControls() {
     voice.explicitRequested = true;
     stopVoiceRecognition();
     updateVoiceControls();
+    setVoiceStatus('A iniciar microfone...');
     startVoiceRecognition('explicit');
   });
 }
@@ -315,6 +334,7 @@ async function endSession() {
   if (state.socket) state.socket.close();
   state.socket = null;
   state.sessionId = null;
+  if ('speechSynthesis' in window) speechSynthesis.cancel();
   updateVoiceControls();
   setVoiceStatus('Microfone desligado');
   chatView.classList.add('hidden');

@@ -331,11 +331,11 @@ The browser app is available at `http://127.0.0.1:8000`. It includes session des
 Browser (desktop / tablet / phone)
   | HTTP / WebSocket
 FastAPI session + prompt orchestration
-  | automatic backend selection
-Ollama (mistral:7b) or llama.cpp llama-server (GGUF)
+  | local backend selection
+Ollama (qwen2.5:1.5b-instruct) or llama.cpp llama-server (GGUF)
 ```
 
-The default backend is `auto`: it tries Ollama, then the OpenAI-compatible `llama-server` endpoint. Set `LLM_BACKEND=llama-server` to force llama.cpp. Sessions are stored in the local `sessions.db` SQLite file, so a process restart does not erase them. For multiple machines or workers, replace this small store with Redis/PostgreSQL.
+The default backend is Ollama with `qwen2.5:1.5b-instruct`, selected for low latency on a CPU-only laptop. Set `OLLAMA_MODEL` to change it, or set `LLM_BACKEND=llama-server` to force llama.cpp. Sessions are stored in the local `sessions.db` SQLite file, so a process restart does not erase them. For multiple machines or workers, replace this small store with Redis/PostgreSQL.
 
 Health check:
 
@@ -365,11 +365,11 @@ python -m pip install openai-whisper soundfile
 Start Ollama from `C:\Users\iliei\AppData\Local\Programs\Ollama` if it is not already running, then pull the model:
 
 ```powershell
-ollama pull mistral:7b
+ollama pull qwen2.5:1.5b-instruct
 uvicorn app:app --reload --host 0.0.0.0 --port 8000
 ```
 
-### Option B: local llama.cpp server with the bundled GGUF
+### Option B: local llama.cpp server with the same Qwen GGUF
 
 Find the executable name first:
 
@@ -382,8 +382,8 @@ Start it in a second PowerShell window. Use the resulting executable path if it 
 ```powershell
 cd C:\Users\iliei\Desktop\EntrevistadorAPX\Mistral-7B-GGUF
 & "C:\tools\llama.cpp\llama-server.exe" `
-  -m ".\mistral-7b-instruct-v0.2.Q4_K_M.gguf" `
-  --host 127.0.0.1 --port 8080 -c 4096
+  --hf-repo "Qwen/Qwen2.5-1.5B-Instruct-GGUF:Q4_K_M" `
+  --host 127.0.0.1 --port 8080 --ctx-size 4096 --threads 12 --parallel 1
 ```
 
 In another PowerShell window, start the API configured for llama.cpp:
@@ -396,7 +396,7 @@ $env:LLAMA_SERVER_URL = "http://127.0.0.1:8080/v1/chat/completions"
 uvicorn app:app --reload --port 8000
 ```
 
-For LAN/browser use, use `--host 0.0.0.0` instead of the default loopback host. The application probes `llama-server` through `/health` and uses its native `/completion` endpoint with the Mistral instruction template. On a CPU-only machine, one answer can take roughly thirty seconds; GPU offload or a smaller model reduces latency.
+For LAN/browser use, use `--host 0.0.0.0` instead of the default loopback host. The application probes `llama-server` through `/health` and uses its OpenAI-compatible `/v1/chat/completions` endpoint with the Qwen chat template. On a CPU-only machine, one answer can take several seconds; GPU offload or a smaller model reduces latency.
 
 ### Fast smoke test without a model
 
