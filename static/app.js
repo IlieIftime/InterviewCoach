@@ -17,6 +17,9 @@ const state = {
     restartTimer: null,
     speechEnabled: true,
     speaking: false,
+    ttsAudio: null,
+    ttsUrl: '',
+    ttsRequestId: 0,
     localRecorder: null,
     localStream: null,
     localChunks: [],
@@ -58,7 +61,7 @@ function renderQuestions() {
 function addMessage(kind, text) {
   const node = document.createElement('article');
   node.className = `message ${kind}`;
-  node.innerHTML = `<div class="message-meta">${kind === 'agent' ? 'NORTHSTAR' : 'TU'}</div><div class="message-text">${escapeHtml(text).replace(/\n/g, '<br>')}</div>`;
+  node.innerHTML = `<div class="message-meta">${kind === 'agent' ? 'ENTREVISTADOR APX' : 'TU'}</div><div class="message-text">${escapeHtml(text).replace(/\n/g, '<br>')}</div>`;
   $('messages').appendChild(node);
   $('messages').scrollTop = $('messages').scrollHeight;
 }
@@ -145,10 +148,49 @@ $('read-aloud').addEventListener('click', () => {
   if (latest) speakAgent(latest.textContent);
 });
 
-function speakAgent(text) {
-  if (!state.voice.speechEnabled || !text || !('speechSynthesis' in window)) return;
+async function speakAgent(text) {
+  if (!state.voice.speechEnabled || !text) return;
+  cancelAgentSpeech();
+  const voice = state.voice;
+  const requestId = ++voice.ttsRequestId;
+  voice.speaking = true;
+  try {
+    const response = await fetch('/speak', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({text}),
+    });
+    if (!response.ok) throw new Error('Piper indisponível');
+    const audioUrl = URL.createObjectURL(await response.blob());
+    if (requestId !== voice.ttsRequestId) {
+      URL.revokeObjectURL(audioUrl);
+      return;
+    }
+    const audio = new Audio(audioUrl);
+    voice.ttsAudio = audio;
+    voice.ttsUrl = audioUrl;
+    const finishAudio = () => {
+      if (voice.ttsAudio !== audio) return;
+      voice.ttsAudio = null;
+      voice.ttsUrl = '';
+      URL.revokeObjectURL(audioUrl);
+      voice.speaking = false;
+      if (voice.activeRequested && !state.answerPending) scheduleActiveVoiceRestart();
+    };
+    audio.onended = finishAudio;
+    audio.onerror = finishAudio;
+    await audio.play();
+  } catch (_) {
+    if (requestId === voice.ttsRequestId) speakWithBrowser(text);
+  }
+}
+
+function speakWithBrowser(text) {
+  if (!('speechSynthesis' in window)) {
+    state.voice.speaking = false;
+    return;
+  }
   speechSynthesis.cancel();
-  state.voice.speaking = true;
   const utterance = new SpeechSynthesisUtterance(text);
   utterance.lang = 'pt-PT';
   utterance.rate = 0.96;
@@ -168,7 +210,16 @@ function speakAgent(text) {
 
 function cancelAgentSpeech() {
   if ('speechSynthesis' in window) speechSynthesis.cancel();
-  state.voice.speaking = false;
+  const voice = state.voice;
+  voice.ttsRequestId += 1;
+  if (voice.ttsAudio) {
+    voice.ttsAudio.pause();
+    voice.ttsAudio.currentTime = 0;
+    voice.ttsAudio = null;
+  }
+  if (voice.ttsUrl) URL.revokeObjectURL(voice.ttsUrl);
+  voice.ttsUrl = '';
+  voice.speaking = false;
 }
 
 function voiceRecognitionConstructor() {
@@ -541,8 +592,7 @@ async function endSession() {
   if (state.socket) state.socket.close();
   state.socket = null;
   state.sessionId = null;
-  if ('speechSynthesis' in window) speechSynthesis.cancel();
-  state.voice.speaking = false;
+  cancelAgentSpeech();
   updateVoiceControls();
   setVoiceStatus('Microfone desligado');
   chatView.classList.add('hidden');

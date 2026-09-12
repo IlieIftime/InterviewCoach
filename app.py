@@ -3,19 +3,21 @@ from __future__ import annotations
 
 import base64
 import asyncio
+import io
 import json
 import os
 import subprocess
 import tempfile
 import threading
 import uuid
+import wave
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import requests
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -29,7 +31,7 @@ except ImportError:  # pragma: no cover - requirements.txt installs it
 app = FastAPI(title="Live Interview Coach", version="0.3.0")
 app.mount("/static", StaticFiles(directory=Path(__file__).resolve().parent / "static"), name="static")
 
-DEFAULT_OLLAMA_MODEL = "qwen2.5:1.5b-instruct"
+DEFAULT_OLLAMA_MODEL = "qwen2.5:7b"
 DEFAULT_BACKEND = "ollama"
 MAX_PROMPT_HISTORY = 3600
 
@@ -96,6 +98,8 @@ def project_path(filename: str) -> Path:
 session_store = SessionStore(project_path("sessions.db"))
 WHISPER_MODEL_CACHE: dict[str, Any] = {}
 WHISPER_MODEL_LOCK = threading.Lock()
+PIPER_VOICE_CACHE: Any = None
+PIPER_VOICE_LOCK = threading.Lock()
 FFMPEG_DIR = Path(r"C:\tools")
 if (FFMPEG_DIR / "ffmpeg.exe").exists():
     os.environ["PATH"] = f"{FFMPEG_DIR}{os.pathsep}{os.environ.get('PATH', '')}"
@@ -269,9 +273,36 @@ async def warm_whisper_model() -> None:
             pass
 
 
+def piper_model_path() -> Path:
+    configured = os.getenv("PIPER_MODEL")
+    return Path(configured) if configured else project_path("models/piper/pt_PT-tugao-medium.onnx")
+
+
+def get_piper_voice() -> Any:
+    global PIPER_VOICE_CACHE
+    model_path = piper_model_path()
+    if not model_path.exists():
+        raise FileNotFoundError(f"Piper voice not found: {model_path}")
+    with PIPER_VOICE_LOCK:
+        if PIPER_VOICE_CACHE is None:
+            from piper.voice import PiperVoice
+
+            PIPER_VOICE_CACHE = PiperVoice.load(model_path)
+    return PIPER_VOICE_CACHE
+
+
+async def warm_piper_voice() -> None:
+    if os.getenv("WARMUP_PIPER", "1") == "1":
+        try:
+            await asyncio.to_thread(get_piper_voice)
+        except Exception:
+            pass
+
+
 @app.on_event("startup")
 async def preload_local_voice() -> None:
     asyncio.create_task(warm_whisper_model())
+    asyncio.create_task(warm_piper_voice())
 
 
 def transcribe_audio(encoded: str, audio_format: str) -> str:
@@ -335,6 +366,22 @@ def transcribe(payload: TranscribeRequest) -> dict[str, str]:
     return {"text": text, "model": os.getenv("WHISPER_MODEL", "tiny")}
 
 
+class SpeakRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=600)
+
+
+@app.post("/speak")
+def speak(payload: SpeakRequest) -> Response:
+    try:
+        voice = get_piper_voice()
+        audio = io.BytesIO()
+        with wave.open(audio, "wb") as wav_file:
+            voice.synthesize_wav(payload.text.strip(), wav_file)
+        return Response(audio.getvalue(), media_type="audio/wav")
+    except (FileNotFoundError, ImportError, OSError) as exc:
+        raise HTTPException(503, f"Piper TTS indisponível: {exc}") from exc
+
+
 @app.get("/health")
 def health() -> dict[str, Any]:
     model = backend_status()
@@ -346,6 +393,9 @@ def health() -> dict[str, Any]:
             "backend": "whisper-local",
             "model": os.getenv("WHISPER_MODEL", "tiny"),
             "ready": os.getenv("WHISPER_MODEL", "tiny") in WHISPER_MODEL_CACHE,
+            "tts_backend": "piper-local" if piper_model_path().exists() else "browser-fallback",
+            "tts_model": piper_model_path().name,
+            "tts_ready": PIPER_VOICE_CACHE is not None,
         },
         "active_sessions": session_store.count(),
     }

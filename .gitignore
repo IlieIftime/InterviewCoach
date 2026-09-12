@@ -4,3 +4,5 @@ __pycache__/
 sessions.db
 .env
 *.gguf
+models/piper/*.onnx
+models/piper/*.onnx.json

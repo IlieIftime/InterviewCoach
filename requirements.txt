@@ -7,3 +7,4 @@ python-dotenv>=1,<2
 pydantic>=2,<3
 # Local STT: the first voice request downloads the selected Whisper model.
 openai-whisper>=20250625
+piper-tts>=1.8,<2

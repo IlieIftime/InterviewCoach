@@ -323,7 +323,7 @@ And thank you again to a16z for their generous grant.
 
 The files `app.py`, `cli.py`, `agent_prompt.txt`, and `test_session.ps1` provide the local interview coach API.
 
-The browser app is available at `http://127.0.0.1:8000`. It includes session design (persona, behaviours, avoid rules, candidate context and questions), a responsive live chat, WebSocket transport, local audio capture with Whisper STT, active listening with local silence detection, an explicit microphone button for dictation, browser/system text-to-speech, feedback, score and follow-ups. Browser speech recognition remains a fallback when local audio capture is unavailable.
+The browser app is available at `http://127.0.0.1:8000`. It includes session design (persona, behaviours, avoid rules, candidate context and questions), a responsive live chat, WebSocket transport, local audio capture with Whisper STT, active listening with local silence detection, an explicit microphone button for dictation, local neural Piper text-to-speech, feedback, score and follow-ups. Browser speech synthesis remains a fallback when Piper is unavailable.
 
 ### Architecture
 
@@ -332,10 +332,10 @@ Browser (desktop / tablet / phone)
   | HTTP / WebSocket
 FastAPI session + prompt orchestration
   | local backend selection
-Ollama (qwen2.5:1.5b-instruct) or llama.cpp llama-server (GGUF)
+Ollama (qwen2.5:7b) or llama.cpp llama-server (GGUF)
 ```
 
-The default backend is Ollama with `qwen2.5:1.5b-instruct`, selected for low latency on a CPU-only laptop. Set `OLLAMA_MODEL` to change it, or set `LLM_BACKEND=llama-server` to force llama.cpp. Sessions are stored in the local `sessions.db` SQLite file, so a process restart does not erase them. For multiple machines or workers, replace this small store with Redis/PostgreSQL.
+The default backend is Ollama with `qwen2.5:7b`. Set `OLLAMA_MODEL=qwen2.5:1.5b-instruct` for lower latency on a CPU-only laptop, or set `LLM_BACKEND=llama-server` to force llama.cpp. Sessions are stored in the local `sessions.db` SQLite file, so a process restart does not erase them. For multiple machines or workers, replace this small store with Redis/PostgreSQL.
 
 Health check:
 
@@ -365,11 +365,19 @@ python -m pip install openai-whisper soundfile
 Start Ollama from `C:\Users\iliei\AppData\Local\Programs\Ollama` if it is not already running, then pull the model:
 
 ```powershell
-ollama pull qwen2.5:1.5b-instruct
+ollama pull qwen2.5:7b
 uvicorn app:app --reload --host 0.0.0.0 --port 8000
 ```
 
-The API preloads Whisper in the background. The first start uses `WHISPER_MODEL=tiny` by default and downloads that model to the local Whisper cache. `C:\tools\ffmpeg.exe` is detected automatically on this machine. Use `WHISPER_MODEL=base` when recognition quality matters more than latency, or `WARMUP_WHISPER=0` to disable preloading.
+The API preloads Whisper and Piper in the background. The first start uses `WHISPER_MODEL=tiny` by default and downloads that model to the local Whisper cache. `C:\tools\ffmpeg.exe` is detected automatically on this machine. Use `WHISPER_MODEL=base` when recognition quality matters more than latency, or `WARMUP_WHISPER=0` to disable Whisper preloading.
+
+Download the Portuguese neural voice once if `models\piper` is empty:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\download_piper_voice.ps1
+```
+
+The default voice is `pt_PT-tugao-medium.onnx`; Piper preloading can be disabled with `WARMUP_PIPER=0`.
 
 ### Option B: local llama.cpp server with the same Qwen GGUF
 
