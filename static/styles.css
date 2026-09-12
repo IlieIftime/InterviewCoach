@@ -94,6 +94,8 @@ textarea:focus { border-color: var(--aqua-dark); box-shadow: 0 0 0 3px rgba(126,
 .composer-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; }
 .composer-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
 .voice-mode-button, .voice-mic-button { display: inline-flex; align-items: center; gap: 6px; padding: 8px 11px; border: 1px solid var(--line); border-radius: 99px; color: var(--muted); background: rgba(16, 43, 61, .58); font: 10px "DM Mono", monospace; transition: .2s; }
+.stt-mode-button { padding: 7px 9px; border: 1px solid rgba(126, 240, 206, .26); border-radius: 99px; color: var(--aqua); background: rgba(126, 240, 206, .06); font: 9px "DM Mono", monospace; }
+.stt-mode-button:hover { color: var(--bg); background: var(--aqua); }
 .voice-mode-button:hover, .voice-mode-button.active, .voice-mic-button:hover, .voice-mic-button.recording { border-color: var(--aqua); color: var(--bg); background: var(--aqua); }
 .voice-mode-button.active { animation: listen-pulse 1.7s infinite; }
 .voice-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--coral); }
@@ -128,6 +130,7 @@ textarea:focus { border-color: var(--aqua-dark); box-shadow: 0 0 0 3px rgba(126,
 .followups { padding-top: 11px; color: var(--muted); font-size: 11px; line-height: 1.6; }
 .followup { padding: 9px 0; border-bottom: 1px solid var(--line); color: #c6d8d5; }
 .voice-mode-button:disabled, .voice-mic-button:disabled, .icon-button:disabled { opacity: .4; cursor: not-allowed; }
+.stt-mode-button:disabled { opacity: .4; cursor: not-allowed; }
 
 @media (max-width: 1050px) {
   .shell { padding: 24px; }

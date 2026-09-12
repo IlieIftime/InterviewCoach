@@ -33,6 +33,7 @@ const state = {
     localStartedAt: 0,
     localLastVoiceAt: 0,
     localHadSpeech: false,
+    sttMode: localStorage.getItem('apx-stt-mode-v2') || 'browser',
   },
 };
 const $ = (id) => document.getElementById(id);
@@ -233,6 +234,7 @@ function setVoiceStatus(text) {
 function updateVoiceControls() {
   const activeButton = $('active-listening');
   const microphoneButton = $('voice-input');
+  const sttButton = $('stt-mode');
   const voice = state.voice;
   activeButton.classList.toggle('active', voice.activeRequested);
   activeButton.setAttribute('aria-pressed', String(voice.activeRequested));
@@ -242,6 +244,11 @@ function updateVoiceControls() {
   microphoneButton.setAttribute('aria-pressed', String(voice.explicitRequested));
   microphoneButton.setAttribute('title', voice.explicitRequested ? 'Parar microfone' : 'Ditar resposta');
   microphoneButton.setAttribute('aria-label', voice.explicitRequested ? 'Parar microfone' : 'Ditar resposta');
+  if (sttButton) {
+    const mode = selectedSttMode();
+    sttButton.textContent = mode === 'browser' ? 'STT browser' : 'STT local';
+    sttButton.classList.toggle('local', mode === 'local');
+  }
 }
 
 function clearVoiceTimers() {
@@ -261,6 +268,12 @@ function renderVoiceTranscript() {
 
 function localVoiceSupported() {
   return Boolean(navigator.mediaDevices?.getUserMedia && window.MediaRecorder);
+}
+
+function selectedSttMode() {
+  if (state.voice.sttMode === 'browser' && voiceRecognitionConstructor()) return 'browser';
+  if (state.voice.sttMode === 'local' && localVoiceSupported()) return 'local';
+  return localVoiceSupported() ? 'local' : 'browser';
 }
 
 function localVoiceMimeType() {
@@ -476,7 +489,7 @@ function startBrowserRecognition(mode) {
     if (voice.recognition !== recognition) return;
     voice.running = true;
     updateVoiceControls();
-    setVoiceStatus(mode === 'active' ? 'A ouvir. Uma pausa envia a resposta.' : 'A gravar. Clica no microfone para terminar.');
+    setVoiceStatus(mode === 'active' ? 'A ouvir com STT browser. Uma pausa envia.' : 'A gravar com STT browser. Clica para terminar.');
   };
   recognition.onend = () => {
     if (voice.recognition !== recognition) return;
@@ -528,7 +541,7 @@ function startBrowserRecognition(mode) {
 }
 
 function startVoiceRecognition(mode) {
-  if (localVoiceSupported()) {
+  if (selectedSttMode() === 'local') {
     startLocalRecognition(mode);
     return;
   }
@@ -578,6 +591,15 @@ function setupVoiceControls() {
     setVoiceStatus('A iniciar microfone...');
     startVoiceRecognition('explicit');
   });
+  $('stt-mode').addEventListener('click', () => {
+    const voice = state.voice;
+    if (voice.running || voice.localProcessing) return;
+    voice.sttMode = selectedSttMode() === 'browser' ? 'local' : 'browser';
+    localStorage.setItem('apx-stt-mode-v2', voice.sttMode);
+    updateVoiceControls();
+    setVoiceStatus(voice.sttMode === 'browser' ? 'STT browser: mais rápido e preciso.' : 'STT local: Whisper, sem serviço de voz.');
+  });
+  updateVoiceControls();
 }
 
 setupVoiceControls();

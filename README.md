@@ -323,7 +323,7 @@ And thank you again to a16z for their generous grant.
 
 The files `app.py`, `cli.py`, `agent_prompt.txt`, and `test_session.ps1` provide the local interview coach API.
 
-The browser app is available at `http://127.0.0.1:8000`. It includes session design (persona, behaviours, avoid rules, candidate context and questions), a responsive live chat, WebSocket transport, local audio capture with Whisper STT, active listening with local silence detection, an explicit microphone button for dictation, local neural Piper text-to-speech, feedback, score and follow-ups. Browser speech synthesis remains a fallback when Piper is unavailable.
+The browser app is available at `http://127.0.0.1:8000`. It includes session design (persona, behaviours, avoid rules, candidate context and questions), a responsive live chat, WebSocket transport, active listening, an explicit microphone button for dictation, local neural Piper text-to-speech, feedback, score and follow-ups. `STT browser` is the default for lower latency and better live dictation; `STT local` switches to Whisper without a voice service. Browser speech synthesis remains a fallback when Piper is unavailable.
 
 ### Architecture
 
@@ -332,10 +332,10 @@ Browser (desktop / tablet / phone)
   | HTTP / WebSocket
 FastAPI session + prompt orchestration
   | local backend selection
-Ollama (qwen2.5:7b) or llama.cpp llama-server (GGUF)
+Ollama (qwen2.5:1.5b-instruct) or llama.cpp llama-server (GGUF)
 ```
 
-The default backend is Ollama with `qwen2.5:7b`. Set `OLLAMA_MODEL=qwen2.5:1.5b-instruct` for lower latency on a CPU-only laptop, or set `LLM_BACKEND=llama-server` to force llama.cpp. Sessions are stored in the local `sessions.db` SQLite file, so a process restart does not erase them. For multiple machines or workers, replace this small store with Redis/PostgreSQL.
+The default backend is Ollama with `qwen2.5:1.5b-instruct`, selected for the live low-latency loop on a CPU-only laptop. The live loop uses a compact 2048-token context, 96-token response budget and a 30-minute model keep-alive. Set `OLLAMA_MODEL=qwen2.5:7b` when answer quality matters more than response time, or set `LLM_BACKEND=llama-server` to force llama.cpp. Sessions are stored in the local `sessions.db` SQLite file, so a process restart does not erase them. For multiple machines or workers, replace this small store with Redis/PostgreSQL.
 
 Health check:
 
@@ -365,7 +365,7 @@ python -m pip install openai-whisper soundfile
 Start Ollama from `C:\Users\iliei\AppData\Local\Programs\Ollama` if it is not already running, then pull the model:
 
 ```powershell
-ollama pull qwen2.5:7b
+ollama pull qwen2.5:1.5b-instruct
 uvicorn app:app --reload --host 0.0.0.0 --port 8000
 ```
 
@@ -448,7 +448,7 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8000/ask `
   -Body (@{ session_id = $start.session_id; text_answer = "I built a cheque validation pipeline with computer vision and CI/CD." } | ConvertTo-Json)
 ```
 
-For audio, base64-encode a WAV/WebM file and send it as `audio_base64` with its `audio_format`, either to `/transcribe` for local STT or to `/ask` for transcription plus coaching. Whisper loads lazily on the first audio request. Text input works without Whisper. For live text exchange, connect a WebSocket to `ws://127.0.0.1:8000/ws/{session_id}` and send `{"text_answer":"..."}`.
+For audio, base64-encode a WAV/WebM file and send it as `audio_base64` with its `audio_format`, either to `/transcribe` for local STT or to `/ask` for transcription plus coaching. No frontend, usa o botão `STT browser` para a captação Web Speech (mais rápida) e alterna para `STT local` quando quiseres validar com Whisper. O microfone explícito preenche o campo para confirmação; a escuta ativa envia depois de uma pausa. Text input works without Whisper. For live text exchange, connect a WebSocket to `ws://127.0.0.1:8000/ws/{session_id}` and send `{"text_answer":"..."}`.
 
 ### Option C: browser-local small model
 

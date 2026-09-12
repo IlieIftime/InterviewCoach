@@ -31,9 +31,9 @@ except ImportError:  # pragma: no cover - requirements.txt installs it
 app = FastAPI(title="Live Interview Coach", version="0.3.0")
 app.mount("/static", StaticFiles(directory=Path(__file__).resolve().parent / "static"), name="static")
 
-DEFAULT_OLLAMA_MODEL = "qwen2.5:7b"
+DEFAULT_OLLAMA_MODEL = "qwen2.5:1.5b-instruct"
 DEFAULT_BACKEND = "ollama"
-MAX_PROMPT_HISTORY = 3600
+MAX_PROMPT_HISTORY = 1200
 
 
 @dataclass
@@ -72,23 +72,20 @@ class StopRequest(BaseModel):
     session_id: str
 
 
-PROMPT = """SYSTEM:
-És um entrevistador e coach experiente: caloroso, perspicaz, natural e conciso. A conversa é em português de Portugal. Analisa a resposta do candidato no contexto da conversa. Se estiver vaga ou incompleta, faz uma pergunta de follow-up concreta; só avança para a próxima pergunta planeada quando a resposta estiver suficientemente coberta. Todas as frases em feedback, followups, next_question e notes devem ser em português de Portugal. Devolve apenas JSON válido, sem markdown nem texto adicional.
+PROMPT = """És um entrevistador em português de Portugal: caloroso, perspicaz e conciso.
+Analisa a resposta no contexto. Faz um follow-up concreto se faltar detalhe; caso contrário usa a próxima pergunta planeada. Devolve apenas JSON válido, sem markdown.
 
-USER:
 Persona: {persona}
 Instruções: {instructions}
 Evitar: {avoid}
-Informação adicional sobre o candidato: {candidate_context}
-Conversa recente:
-{history}
+Candidato: {candidate_context}
+Histórico recente: {history}
 Pergunta atual: {current_question}
-Resposta do candidato: {candidate_text}
-Próxima pergunta planeada (usa-a apenas se não for necessário follow-up): {next_question_hint}
+Resposta: {candidate_text}
+Próxima pergunta planeada: {next_question_hint}
 
-Produz JSON exatamente com estas chaves. Mantém feedback com no máximo dois itens curtos, followups com no máximo uma pergunta e notes numa frase curta:
-{{"feedback": ["ponto 1", "ponto 2"], "followups": ["pergunta"], "next_question": "follow-up ou próxima pergunta planeada", "score": 0, "notes": "justificação numa frase"}}
-"""
+Responde exatamente com feedback (1 item curto), followups (0 ou 1 pergunta), next_question, score (0-5) e notes (máximo 8 palavras). Todos os textos em português de Portugal.
+{{"feedback":["..."],"followups":["..."],"next_question":"...","score":0,"notes":"..."}}"""
 
 
 def project_path(filename: str) -> Path:
@@ -117,10 +114,10 @@ def build_prompt(session: Session, candidate_text: str) -> str:
         persona=session.persona,
         instructions=session.instructions,
         avoid=session.avoid,
-        candidate_context=session.candidate_context[:1600],
+        candidate_context=session.candidate_context[:700],
         history=history[:MAX_PROMPT_HISTORY],
         current_question=question,
-        candidate_text=candidate_text[:2200],
+        candidate_text=candidate_text[:1100],
         next_question_hint=next_question,
     )
 
@@ -146,7 +143,7 @@ def call_openai_compatible(prompt: str) -> str:
         json={
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.2,
-            "max_tokens": int(os.getenv("LLM_MAX_TOKENS", "320")),
+            "max_tokens": int(os.getenv("LLM_MAX_TOKENS", "96")),
         },
         timeout=180,
     )
@@ -179,10 +176,12 @@ def call_ollama(prompt: str) -> dict[str, Any]:
                 "prompt": prompt,
                 "stream": False,
                 "format": "json",
+                "keep_alive": os.getenv("OLLAMA_KEEP_ALIVE", "30m"),
                 "options": {
-                    "temperature": 0.2,
-                    "num_ctx": int(os.getenv("LLM_CONTEXT", "4096")),
-                    "num_predict": int(os.getenv("LLM_MAX_TOKENS", "320")),
+                    "temperature": 0.15,
+                    "num_ctx": int(os.getenv("LLM_CONTEXT", "2048")),
+                    "num_thread": int(os.getenv("LLM_THREADS", "12")),
+                    "num_predict": int(os.getenv("LLM_MAX_TOKENS", "96")),
                 },
             },
             timeout=180,
