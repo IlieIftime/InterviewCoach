@@ -3,7 +3,7 @@ import unittest
 import gc
 from pathlib import Path
 
-from app import Session, forbidden_question, parse_json
+from app import Session, forbidden_question, interview_corpus, next_distinct_planned_question, parse_json, question_similarity, repeated_question
 from session_store import SessionStore
 
 
@@ -47,6 +47,25 @@ class ConversationContractTests(unittest.TestCase):
         session = self.make_session()
         self.assertTrue(forbidden_question("Qual é o teu salário atual?", session))
         self.assertFalse(forbidden_question("Que resultado obtiveste no projeto?", session))
+
+    def test_semantic_question_repeat_is_detected(self):
+        session = self.make_session()
+        session.history.append({"question": "Qual foi o teu projeto técnico mais relevante?", "answer": "Usei cache."})
+        self.assertGreaterEqual(question_similarity("Que projeto técnico foi mais relevante para ti?", session.history[0]["question"]), 0.68)
+        self.assertTrue(repeated_question("Que projeto técnico foi mais relevante para ti?", session))
+
+    def test_corpus_contains_answer_and_previous_questions(self):
+        session = self.make_session()
+        session.history.append({"question": "Fala do teu percurso profissional.", "answer": "Trabalhei em ML."})
+        corpus = interview_corpus(session, "Reduzi a latência em 40%.")
+        self.assertIn("Reduzi a latência", corpus)
+        self.assertIn("Trabalhei em ML", corpus)
+
+    def test_next_planned_skips_duplicate_question(self):
+        session = self.make_session()
+        session.history.append({"question": "Fala do teu percurso profissional.", "answer": "Trabalhei em ML."})
+        session.current_index = 0
+        self.assertEqual(next_distinct_planned_question(session), "Que projeto recordas melhor?")
 
     def test_store_migrates_metrics_and_feedback(self):
         with tempfile.TemporaryDirectory() as directory:

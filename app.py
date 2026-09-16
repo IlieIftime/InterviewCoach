@@ -10,8 +10,10 @@ import subprocess
 import tempfile
 import threading
 import time
+import unicodedata
 import uuid
 import wave
+from difflib import SequenceMatcher
 from io import BytesIO
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -280,6 +282,11 @@ Se for free, prioriza uma conversa coerente e pode alterar a ordem.
 Nunca repitas uma pergunta ja respondida. Faz uma pergunta de cada vez.
 Fala diretamente com o candidato usando "tu"; nao escrevas "o candidato" como se estivesses a produzir um relatorio.
 Mantem o JSON compacto: reply com no maximo 160 caracteres, feedback com um item, covered e missing com no maximo dois itens curtos, e notes com no maximo 100 caracteres.
+
+CORPUS DE CONTEXTO DA ENTREVISTA:
+{interview_corpus(session, candidate_text)}
+
+Regra anti-repeticao: as perguntas anteriores acima sao memoria de perguntas ja feitas. A nova pergunta tem de explorar uma dimensao diferente da resposta nova ou avancar para o proximo tema. Nao reformules uma pergunta anterior.
 """
     return prompt + extra_rules
 
@@ -475,6 +482,86 @@ def is_confirmation_no(value: str) -> bool:
 def forbidden_question(question: str, session: Session) -> bool:
     normalized = question.casefold().strip()
     return any(item.casefold().strip() and item.casefold().strip() in normalized for item in session.questions_to_avoid)
+
+
+QUESTION_STOPWORDS = {
+    "a", "as", "ao", "aos", "com", "como", "da", "das", "de", "do", "dos", "e", "em",
+    "este", "esta", "foi", "foi", "o", "os", "para", "por", "que", "qual", "quando", "se",
+    "sobre", "teu", "tua", "um", "uma", "tu", "me", "do", "na", "no", "nas", "nos",
+}
+
+
+def normalized_question_tokens(value: str) -> set[str]:
+    without_accents = "".join(
+        character for character in unicodedata.normalize("NFKD", value.casefold())
+        if not unicodedata.combining(character)
+    )
+    tokens = re.findall(r"[a-z0-9]{3,}", without_accents)
+    return {token for token in tokens if token not in QUESTION_STOPWORDS}
+
+
+def question_similarity(first: str, second: str) -> float:
+    first_tokens = normalized_question_tokens(first)
+    second_tokens = normalized_question_tokens(second)
+    if not first_tokens or not second_tokens:
+        return SequenceMatcher(None, first.casefold(), second.casefold()).ratio()
+    overlap = len(first_tokens & second_tokens) / max(1, len(first_tokens | second_tokens))
+    text_ratio = SequenceMatcher(None, " ".join(sorted(first_tokens)), " ".join(sorted(second_tokens))).ratio()
+    return max(overlap, text_ratio)
+
+
+def previous_questions(session: Session) -> list[str]:
+    questions = [str(turn.get("question", "")) for turn in session.history]
+    current = session.pending_question or (session.questions[session.current_index] if session.questions else "")
+    return [question for question in questions + [current] if usable_question(question)]
+
+
+def repeated_question(candidate: str, session: Session, threshold: float = 0.68) -> bool:
+    if not candidate:
+        return False
+    return any(question_similarity(candidate, previous) >= threshold for previous in previous_questions(session))
+
+
+def interview_corpus(session: Session, candidate_text: str = "") -> str:
+    turns = []
+    for turn in session.history[-6:]:
+        turns.append(
+            f"Q: {str(turn.get('question', ''))[:180]}\n"
+            f"A: {str(turn.get('answer', ''))[:420]}\n"
+            f"Factos: {str(turn.get('covered', []))[:180]}\n"
+            f"Lacunas: {str(turn.get('missing', []))[:180]}"
+        )
+    turn_text = "\n".join(turns) or "Ainda não existem respostas."
+    corpus = (
+        f"Contexto inicial: {session.candidate_context[:900]}\n"
+        f"Factos consolidados: {json.dumps(session.covered_topics[-16:], ensure_ascii=False)}\n"
+        f"Lacunas a explorar: {json.dumps(session.missing_topics[-16:], ensure_ascii=False)}\n"
+        f"Perguntas já feitas: {json.dumps(previous_questions(session)[-12:], ensure_ascii=False)}\n"
+        f"Entrevista até agora:\n{turn_text}\n"
+        f"Nova resposta a integrar: {candidate_text[:700]}"
+    )
+    return corpus[:3600]
+
+
+def next_distinct_planned_question(session: Session) -> str:
+    start = session.current_index + 1
+    for index in range(start, len(session.questions)):
+        question = usable_question(session.questions[index])
+        if question and not forbidden_question(question, session) and not repeated_question(question, session):
+            return question
+    missing = next((item for item in reversed(session.missing_topics) if item.strip()), "a decisão mais importante")
+    alternatives = [
+        f"Que impacto concreto teve essa experiência e como o mediste?",
+        f"Que decisão tomaste nesse contexto e que alternativa rejeitaste?",
+        f"O que aprendeste com essa experiência e o que farias de forma diferente?",
+        f"Como explicarias essa experiência a uma pessoa não técnica?",
+    ]
+    for question in alternatives:
+        if missing and missing.casefold() not in question.casefold():
+            question = f"Podes desenvolver o ponto sobre {missing.lower()}?"
+        if not repeated_question(question, session) and not forbidden_question(question, session):
+            return question
+    return "Que novo aspeto desta experiência ainda não explorámos?"
 
 
 def fallback_reply(question_kind: str) -> str:
@@ -843,15 +930,18 @@ def ask(payload: AskRequest) -> dict[str, Any]:
     candidate_question = usable_question(result.get("question"))
     if not candidate_question:
         candidate_question = usable_question(result.get("followups", [""])[0] if result.get("followups") else "")
-    if candidate_question.casefold() == current_question.casefold() or forbidden_question(candidate_question, session):
+    if (
+        candidate_question.casefold() == current_question.casefold()
+        or forbidden_question(candidate_question, session)
+        or repeated_question(candidate_question, session)
+    ):
         candidate_question = ""
     kind = str(result.get("question_kind") or "").lower()
     wants_followup = bool(candidate_question) and (kind in {"followup", "clarification"} or not result.get("should_advance", True))
     if wants_followup and session.followup_count >= session.max_followups:
         wants_followup = False
         candidate_question = ""
-    next_planned_index = min(session.current_index + 1, len(session.questions) - 1)
-    next_planned = session.questions[next_planned_index] if session.questions and session.current_index + 1 < len(session.questions) else "Obrigado. Que perguntas tens para mim?"
+    next_planned = next_distinct_planned_question(session)
     if wants_followup:
         result["question"] = candidate_question
         result["next_question"] = candidate_question
@@ -861,8 +951,6 @@ def ask(payload: AskRequest) -> dict[str, Any]:
         session.followup_count += 1
         result["is_followup"] = True
     else:
-        if forbidden_question(next_planned, session):
-            next_planned = "Podes dar um exemplo concreto dessa experiência?"
         session.pending_question = None
         session.current_index = min(session.current_index + 1, len(session.questions) - 1)
         session.followup_count = 0
