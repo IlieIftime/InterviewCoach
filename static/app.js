@@ -1,5 +1,6 @@
 const state = {
   sessionId: null,
+  config: {language: 'pt-PT', min_pause_seconds: 1.5, duration_minutes: 20, script_fidelity: 'adaptive', model: ''},
   questions: [],
   current: 0,
   socket: null,
@@ -33,6 +34,10 @@ const state = {
     localStartedAt: 0,
     localLastVoiceAt: 0,
     localHadSpeech: false,
+    lastConfidence: null,
+    captureMode: 'text',
+    autoSubmitted: false,
+    answerMaxTimer: null,
     sttMode: localStorage.getItem('apx-stt-mode-v2') || 'browser',
   },
 };
@@ -62,6 +67,53 @@ async function checkStatus() {
     clearTimeout(timeout);
   }
 }
+
+async function loadModelOptions() {
+  const select = $('llm-model');
+  if (!select) return;
+  try {
+    const response = await fetch('/api/models', {cache: 'no-store'});
+    if (!response.ok) return;
+    const result = await response.json();
+    const models = Array.isArray(result.models) ? result.models : [];
+    select.innerHTML = models.map((model) => `<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`).join('');
+    if (result.current && models.includes(result.current)) select.value = result.current;
+  } catch (_) {
+    // The static defaults in the HTML remain available when Ollama is starting.
+  }
+}
+
+function sessionLanguage() {
+  return state.config.language || $('language')?.value || 'pt-PT';
+}
+
+function pauseDelayMs() {
+  const configured = Number(state.config.min_pause_seconds || $('min-pause-seconds')?.value || 1.5);
+  return Math.max(900, Math.min(4000, configured * 1000));
+}
+
+function expectedAnswerWindowMs() {
+  const question = state.questions[state.current] || '';
+  const words = question.trim().split(/\s+/).filter(Boolean).length;
+  return Math.max(18000, Math.min(75000, 18000 + words * 2200));
+}
+
+function clearAnswerWindowTimer() {
+  clearTimeout(state.voice.answerMaxTimer);
+  state.voice.answerMaxTimer = null;
+}
+
+function scheduleAnswerWindowTimer() {
+  clearAnswerWindowTimer();
+  state.voice.answerMaxTimer = setTimeout(() => {
+    const voice = state.voice;
+    if (!voice.activeRequested || state.answerPending || !voice.finalText.trim() && !$('answer').value.trim()) return;
+    voice.autoSubmitted = true;
+    if (voice.localRecorder) finishLocalRecording(true);
+    else $('answer-form').requestSubmit();
+  }, expectedAnswerWindowMs());
+}
+
 function renderQuestions() {
   $('question-count').textContent = `${Math.min(state.current + 1, state.questions.length)} / ${state.questions.length}`;
   $('question-list').innerHTML = state.questions.map((question, index) => `
@@ -87,8 +139,9 @@ function updateInsights(result) {
 
 function showSession(start) {
   state.sessionId = start.session_id;
+  state.config = {...state.config, ...(start.config || {})};
   state.questions = [...(JSON.parse($('questions').dataset.questions || '[]'))];
-  state.current = 0;
+  state.current = Number(start.current_index || 0);
   setupView.classList.add('hidden');
   chatView.classList.remove('hidden');
   $('messages').innerHTML = '';
@@ -106,6 +159,9 @@ function connectSocket() {
     state.answerPending = false;
     $('thinking').classList.add('hidden');
     updateInsights(result);
+    if (result.stt_confidence != null) {
+      setVoiceStatus(`Resposta recebida (${Math.round(Number(result.stt_confidence) * 100)}% de confiança STT).`);
+    }
     if (result.next_question) {
       if (!result.is_followup) state.current = Math.min(state.current + 1, state.questions.length - 1);
       addMessage('agent', result.next_question);
@@ -131,6 +187,15 @@ $('setup-form').addEventListener('submit', async (event) => {
     avoid: $('avoid').value.trim(),
     candidate_context: $('candidate-context').value.trim(),
     questions,
+    language: $('language').value,
+    must: $('must').value.trim(),
+    dont: $('avoid').value.trim(),
+    questions_to_ask: questions,
+    questions_to_avoid: $('questions-to-avoid').value.split('\n').map((q) => q.trim()).filter(Boolean),
+    script_fidelity: $('script-fidelity').value,
+    duration_minutes: Number($('duration-minutes').value || 20),
+    min_pause_seconds: Number($('min-pause-seconds').value || 1.5),
+    model: $('llm-model').value,
   };
   const response = await fetch('/start', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
   if (!response.ok) return alert('Não foi possível iniciar a sessão.');
@@ -141,14 +206,27 @@ $('answer-form').addEventListener('submit', (event) => {
   event.preventDefault();
   const text = $('answer').value.trim();
   if (!text || state.answerPending || !state.socket || state.socket.readyState !== WebSocket.OPEN) return;
+  const voice = state.voice;
+  const captureMode = voice.captureMode || 'text';
+  const sttConfidence = voice.lastConfidence;
+  const autoSubmitted = Boolean(voice.autoSubmitted);
   state.answerPending = true;
   cancelAgentSpeech();
   clearTimeout(state.voice.silenceTimer);
+  clearAnswerWindowTimer();
   stopVoiceRecognition();
   addMessage('user', text);
   $('answer').value = '';
   $('thinking').classList.remove('hidden');
-  state.socket.send(JSON.stringify({ text_answer: text }));
+  state.socket.send(JSON.stringify({
+    text_answer: text,
+    stt_confidence: sttConfidence,
+    capture_mode: captureMode,
+    auto_submitted: autoSubmitted,
+  }));
+  voice.lastConfidence = null;
+  voice.captureMode = 'text';
+  voice.autoSubmitted = false;
 });
 
 $('answer').addEventListener('keydown', (event) => {
@@ -170,7 +248,7 @@ async function speakAgent(text) {
     const response = await fetch('/speak', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({text, language: document.documentElement.lang || 'pt-PT'}),
+      body: JSON.stringify({text, language: sessionLanguage(), session_id: state.sessionId}),
     });
     if (!response.ok) {
       const detail = await response.text();
@@ -210,7 +288,7 @@ function speakWithBrowser(text) {
   }
   speechSynthesis.cancel();
   const utterance = new SpeechSynthesisUtterance(text);
-  utterance.lang = 'pt-PT';
+  utterance.lang = sessionLanguage();
   utterance.rate = 0.96;
   utterance.pitch = 1;
   const voices = speechSynthesis.getVoices();
@@ -271,6 +349,7 @@ function updateVoiceControls() {
 function clearVoiceTimers() {
   clearTimeout(state.voice.silenceTimer);
   clearTimeout(state.voice.restartTimer);
+  clearAnswerWindowTimer();
   state.voice.silenceTimer = null;
   state.voice.restartTimer = null;
 }
@@ -322,7 +401,8 @@ function monitorLocalSilence() {
       voice.localLastVoiceAt = Date.now();
     }
     const elapsed = Date.now() - voice.localStartedAt;
-    if (voice.localHadSpeech && elapsed > 900 && Date.now() - voice.localLastVoiceAt > 1100) {
+    if (voice.localHadSpeech && elapsed > 1400 && Date.now() - voice.localLastVoiceAt > pauseDelayMs()) {
+      voice.autoSubmitted = voice.mode === 'active';
       finishLocalRecording(true);
       return;
     }
@@ -349,11 +429,12 @@ async function submitLocalAudio(blob, mimeType) {
     const response = await fetch('/transcribe', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({audio_base64: bytesToBase64(await blob.arrayBuffer()), audio_format: format}),
+      body: JSON.stringify({audio_base64: bytesToBase64(await blob.arrayBuffer()), audio_format: format, language: sessionLanguage()}),
     });
     const result = await response.json();
     if (!response.ok) throw new Error(result.detail || 'STT local indisponível.');
     voice.finalText = String(result.text || '').trim();
+    voice.lastConfidence = result.confidence == null ? null : Number(result.confidence);
     voice.interimText = '';
     renderVoiceTranscript();
     if (!voice.finalText) {
@@ -362,6 +443,7 @@ async function submitLocalAudio(blob, mimeType) {
       return;
     }
     if (voice.mode === 'active') {
+      voice.autoSubmitted = true;
       $('answer-form').requestSubmit();
     } else {
       voice.explicitRequested = false;
@@ -402,6 +484,9 @@ async function startLocalRecognition(mode) {
     voice.localStartedAt = Date.now();
     voice.localLastVoiceAt = voice.localStartedAt;
     voice.localHadSpeech = false;
+    voice.captureMode = mode === 'active' ? 'active-local' : 'local';
+    voice.lastConfidence = null;
+    voice.autoSubmitted = false;
     voice.baseText = $('answer').value.trim();
     voice.finalText = '';
     voice.interimText = '';
@@ -429,6 +514,7 @@ async function startLocalRecognition(mode) {
       updateVoiceControls();
     };
     recorder.start(250);
+    if (mode === 'active') scheduleAnswerWindowTimer();
 
     if (mode === 'active') {
       const AudioContext = window.AudioContext || window.webkitAudioContext;
@@ -457,6 +543,7 @@ function stopVoiceRecognition(options = {}) {
   const voice = state.voice;
   clearTimeout(voice.restartTimer);
   voice.restartTimer = null;
+  clearAnswerWindowTimer();
   if (voice.localRecorder) {
     voice.localCancel = !options.submitAudio;
     voice.localSubmit = Boolean(options.submitAudio);
@@ -498,13 +585,17 @@ function startBrowserRecognition(mode) {
   voice.baseText = $('answer').value.trim();
   voice.finalText = '';
   voice.interimText = '';
-  recognition.lang = 'pt-PT';
+  voice.captureMode = mode === 'active' ? 'active-browser' : 'browser';
+  voice.lastConfidence = null;
+  voice.autoSubmitted = false;
+  recognition.lang = sessionLanguage();
   recognition.continuous = mode === 'active';
   recognition.interimResults = true;
   recognition.maxAlternatives = 1;
   recognition.onstart = () => {
     if (voice.recognition !== recognition) return;
     voice.running = true;
+    if (mode === 'active') scheduleAnswerWindowTimer();
     updateVoiceControls();
     setVoiceStatus(mode === 'active' ? 'A ouvir com STT browser. Uma pausa envia.' : 'A gravar com STT browser. Clica para terminar.');
   };
@@ -534,15 +625,21 @@ function startBrowserRecognition(mode) {
     let finalText = '';
     let interimText = '';
     for (let index = event.resultIndex; index < event.results.length; index += 1) {
-      if (event.results[index].isFinal) finalText += event.results[index][0].transcript;
-      else interimText += event.results[index][0].transcript;
+      const alternative = event.results[index][0];
+      if (event.results[index].isFinal) {
+        finalText += alternative.transcript;
+        if (typeof alternative.confidence === 'number' && alternative.confidence > 0) voice.lastConfidence = alternative.confidence;
+      } else interimText += alternative.transcript;
     }
     voice.finalText += finalText;
     voice.interimText = interimText;
     renderVoiceTranscript();
     clearTimeout(voice.silenceTimer);
     if (mode === 'active' && finalText.trim()) {
-      voice.silenceTimer = setTimeout(() => $('answer-form').requestSubmit(), 1500);
+      voice.silenceTimer = setTimeout(() => {
+        voice.autoSubmitted = true;
+        $('answer-form').requestSubmit();
+      }, pauseDelayMs());
     }
   };
   try {
@@ -642,3 +739,4 @@ $('new-session').addEventListener('click', endSession);
 
 function escapeHtml(value) { return String(value).replace(/[&<>"']/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[char])); }
 checkStatus();
+loadModelOptions();

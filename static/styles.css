@@ -20,7 +20,7 @@
 * { box-sizing: border-box; }
 html { min-height: 100%; background: var(--bg); }
 body { margin: 0; min-height: 100vh; color: var(--ink); background: radial-gradient(circle at 12% 6%, #15374a 0, transparent 32rem), radial-gradient(circle at 88% 78%, #123529 0, transparent 27rem), var(--bg); font-family: Manrope, "Segoe UI", sans-serif; }
-button, textarea { font: inherit; }
+button, textarea, select, input { font: inherit; }
 button { cursor: pointer; }
 .shell { width: min(1480px, 100%); min-height: 100vh; margin: auto; padding: 28px 42px 40px; }
 .topbar { display: flex; align-items: center; justify-content: space-between; height: 42px; }
@@ -53,6 +53,10 @@ label { display: block; margin: 0 0 19px; color: #b8cccb; font-size: 11px; font-
 textarea { display: block; width: 100%; margin-top: 8px; padding: 12px 13px; border: 1px solid var(--line); border-radius: 9px; outline: none; resize: vertical; color: var(--ink); background: rgba(5, 17, 27, .48); font-size: 12px; line-height: 1.5; transition: border .2s, box-shadow .2s; }
 textarea::placeholder { color: var(--faint); }
 textarea:focus { border-color: var(--aqua-dark); box-shadow: 0 0 0 3px rgba(126, 240, 206, .09); }
+.setup-options { align-items: end; }
+select, input:not([type="checkbox"]) { display: block; width: 100%; margin-top: 8px; padding: 11px 13px; border: 1px solid var(--line); border-radius: 9px; outline: none; color: var(--ink); background: rgba(5, 17, 27, .48); font-size: 12px; }
+select:focus, input:not([type="checkbox"]):focus { border-color: var(--aqua-dark); box-shadow: 0 0 0 3px rgba(126, 240, 206, .09); }
+input:disabled { color: var(--faint); cursor: not-allowed; }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 13px; }
 .hint { color: var(--faint); font-weight: 400; }
 .primary-button { display: flex; align-items: center; justify-content: space-between; width: 100%; margin-top: 27px; padding: 14px 17px; border: 0; border-radius: 10px; color: var(--bg); background: var(--aqua); font-size: 12px; font-weight: 800; transition: transform .2s, background .2s; }

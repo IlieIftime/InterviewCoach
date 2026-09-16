@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#08141f">
   <title>Entrevistador APX · Conversa local</title>
-  <link rel="stylesheet" href="/static/styles.css?v=tts-status-1">
+  <link rel="stylesheet" href="/static/styles.css?v=iteration-3">
 </head>
 <body>
   <main class="shell">
@@ -24,6 +24,10 @@
       </div>
 
       <form id="setup-form" class="setup-form">
+        <div class="form-grid setup-options">
+          <label>Idioma<select id="language"><option value="pt-PT" selected>Português (Portugal)</option><option value="en-US">English (US)</option></select></label>
+          <label>Modelo local<select id="llm-model"><option value="qwen2.5:1.5b-instruct" selected>qwen2.5:1.5b-instruct</option><option value="qwen2.5:7b">qwen2.5:7b</option></select></label>
+        </div>
         <div class="form-heading"><span>01</span><div><h2>Prepara a sala</h2><p>Define o papel, o contexto e o tipo de conversa.</p></div></div>
         <label>Persona do entrevistador<textarea id="persona" rows="2" required>Talent Acquisition Partner e Hiring Manager de uma equipa de ML Platform.</textarea></label>
         <label>Instruções e comportamentos<textarea id="instructions" rows="3" required>Faz perguntas naturais, alterna entre RH e técnica, aprofunda respostas vagas e dá feedback curto e acionável. Usa STAR quando fizer sentido.</textarea></label>
@@ -31,10 +35,20 @@
           <label>O que evitar<textarea id="avoid" rows="3">Não inventes experiência. Não dês avaliações oficiais. Não faças perguntas agressivas ou irrelevantes.</textarea></label>
           <label>Informação adicional<textarea id="candidate-context" rows="3" placeholder="CV, empresa, vaga, pontos a praticar..."></textarea></label>
         </div>
+        <div class="form-grid">
+          <label>Critérios obrigatórios<textarea id="must" rows="2" placeholder="Ex.: impacto, comunicação, decisão técnica"></textarea></label>
+          <label>Perguntas a evitar<textarea id="questions-to-avoid" rows="2" placeholder="Uma por linha, se necessário"></textarea></label>
+        </div>
         <label>Perguntas de partida <span class="hint">uma por linha</span><textarea id="questions" rows="4" required>Fala-me sobre o teu percurso e o que procuras agora.
 Qual foi o projeto técnico de que mais te orgulhas?
 Como explicarias uma falha num sistema de ML em produção?</textarea></label>
         <button class="primary-button" type="submit"><span>Entrar na conversa</span><span class="button-arrow">↗</span></button>
+        <div class="form-grid setup-options">
+          <label>Fidelidade ao guião<select id="script-fidelity"><option value="adaptive" selected>Adaptativa</option><option value="strict">Estrita</option><option value="free">Livre</option></select></label>
+          <label>Tempo de entrevista (minutos)<input id="duration-minutes" type="number" min="5" max="120" value="20"></label>
+          <label>Pausa para enviar (segundos)<input id="min-pause-seconds" type="number" min="0.8" max="4" step="0.1" value="1.5"></label>
+          <label>Nota<input value="A escuta ativa envia após esta pausa, sem cortar frases curtas." disabled></label>
+        </div>
       </form>
     </section>
 
@@ -63,6 +77,6 @@ Como explicarias uma falha num sistema de ML em produção?</textarea></label>
       </aside>
     </section>
   </main>
-  <script src="/static/app.js?v=tts-status-1"></script>
+  <script src="/static/app.js?v=iteration-3"></script>
 </body>
 </html>

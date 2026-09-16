@@ -335,7 +335,7 @@ FastAPI session + prompt orchestration
 Ollama (qwen2.5:1.5b-instruct) or llama.cpp llama-server (GGUF)
 ```
 
-The default backend is Ollama with `qwen2.5:1.5b-instruct`, selected for the live low-latency loop on a CPU-only laptop. The live loop uses a compact 2048-token context, 96-token response budget and a 30-minute model keep-alive. Set `OLLAMA_MODEL=qwen2.5:7b` when answer quality matters more than response time, or set `LLM_BACKEND=llama-server` to force llama.cpp. Sessions are stored in the local `sessions.db` SQLite file, so a process restart does not erase them. For multiple machines or workers, replace this small store with Redis/PostgreSQL.
+The default backend is Ollama with `qwen2.5:1.5b-instruct`, selected as the best balance for the live loop on this CPU-only laptop. The live loop uses a compact 2048-token context, a 128-token response budget, 4 CPU threads (`LLM_THREADS`) and a 10-minute model keep-alive. `qwen2.5:0.5b-instruct` is also available for experiments with lower memory use, but its Portuguese interview quality is noticeably weaker; `qwen2.5:7b` is the quality option and has higher latency. The setup screen can select the installed model per session. Set `LLM_BACKEND=llama-server` to force llama.cpp. Sessions and turn latency metrics are stored in the local `sessions.db` SQLite file.
 
 Health check:
 
@@ -366,10 +366,11 @@ Start Ollama from `C:\Users\iliei\AppData\Local\Programs\Ollama` if it is not al
 
 ```powershell
 ollama pull qwen2.5:1.5b-instruct
-uvicorn app:app --reload --host 0.0.0.0 --port 8000
+ollama pull qwen2.5:0.5b-instruct
+python -m uvicorn app:app --host 127.0.0.1 --port 8000
 ```
 
-The API preloads Whisper and Piper in the background. The first start uses `WHISPER_MODEL=tiny` by default and downloads that model to the local Whisper cache. `C:\tools\ffmpeg.exe` is detected automatically on this machine. Use `WHISPER_MODEL=base` when recognition quality matters more than latency, or `WARMUP_WHISPER=0` to disable Whisper preloading.
+The API preloads Whisper and Piper in the background. The first start uses `WHISPER_MODEL=tiny` by default and downloads that model to the local Whisper cache. `C:\tools\ffmpeg.exe` is detected automatically on this machine. Use `WHISPER_MODEL=base` when recognition quality matters more than latency, or `WARMUP_WHISPER=0` to disable Whisper preloading. In the app, `Escuta ativa` listens continuously and sends after the configured pause; `Microfone` records one explicit answer that can be reviewed before sending. The default pause is 1.5 seconds and can be changed per session.
 
 Download the Portuguese neural voice once if `models\piper` is empty:
 
