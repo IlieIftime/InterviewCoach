@@ -1,9 +1,11 @@
 import tempfile
 import unittest
 import gc
+from unittest.mock import patch
 from pathlib import Path
 
-from app import Session, forbidden_question, interview_corpus, next_distinct_planned_question, parse_json, question_similarity, repeated_question
+import app
+from app import Session, clean_spoken_reply, forbidden_question, interview_corpus, next_distinct_planned_question, parse_json, question_similarity, repeated_question
 from session_store import SessionStore
 
 
@@ -43,6 +45,14 @@ class ConversationContractTests(unittest.TestCase):
         self.assertEqual(result["reply"], "Entendi o que disseste")
         self.assertEqual(result["question"], "Que resultado obtiveste?")
 
+    def test_reply_never_contains_a_second_spoken_question(self):
+        result = parse_json(
+            '{"reply":"Percebi. Queres falar sobre o projeto Restify?",'
+            '"question":"Como explicarias uma falha num sistema de ML em produção?"}'
+        )
+        self.assertEqual(result["reply"], "Percebi.")
+        self.assertNotIn("?", clean_spoken_reply(result["reply"]))
+
     def test_forbidden_question_is_detected(self):
         session = self.make_session()
         self.assertTrue(forbidden_question("Qual é o teu salário atual?", session))
@@ -66,6 +76,36 @@ class ConversationContractTests(unittest.TestCase):
         session.history.append({"question": "Fala do teu percurso profissional.", "answer": "Trabalhei em ML."})
         session.current_index = 0
         self.assertEqual(next_distinct_planned_question(session), "Que projeto recordas melhor?")
+
+    def test_returned_question_becomes_next_turn_context(self):
+        session_info = app.start_session(
+            app.StartRequest(
+                persona="Teste",
+                questions=["Fala do teu percurso profissional?", "Qual foi o teu projeto mais relevante?"],
+                max_followups=1,
+            )
+        )
+        session_id = session_info["session_id"]
+        model_result = {
+            "reply": "Percebi. Queres falar outra vez sobre o projeto?",
+            "question": "Que impacto concreto teve essa experiência?",
+            "question_kind": "followup",
+            "should_advance": False,
+            "covered": [],
+            "missing": ["impacto"],
+            "feedback": [],
+            "score": 3,
+            "notes": "",
+        }
+        try:
+            with patch.object(app, "call_ollama", return_value=model_result):
+                first = app.ask(app.AskRequest(session_id=session_id, text_answer="Trabalhei em ML."))
+                stored = app.session_store.get(session_id, Session)
+                self.assertEqual(stored.pending_question, first["question"])
+                second = app.ask(app.AskRequest(session_id=session_id, text_answer="Reduzi a latência."))
+                self.assertNotEqual(second["question"], first["question"])
+        finally:
+            app.stop_session(app.StopRequest(session_id=session_id))
 
     def test_store_migrates_metrics_and_feedback(self):
         with tempfile.TemporaryDirectory() as directory:

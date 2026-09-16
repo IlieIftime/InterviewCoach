@@ -282,6 +282,7 @@ Se for free, prioriza uma conversa coerente e pode alterar a ordem.
 Nunca repitas uma pergunta ja respondida. Faz uma pergunta de cada vez.
 Fala diretamente com o candidato usando "tu"; nao escrevas "o candidato" como se estivesses a produzir um relatorio.
 Mantem o JSON compacto: reply com no maximo 160 caracteres, feedback com um item, covered e missing com no maximo dois itens curtos, e notes com no maximo 100 caracteres.
+reply e apenas reconhecimento/ligacao natural, sem qualquer pergunta e sem o caractere '?'. A unica pergunta permitida fica no campo question.
 
 CORPUS DE CONTEXTO DA ENTREVISTA:
 {interview_corpus(session, candidate_text)}
@@ -399,6 +400,25 @@ def _extract_json_string(raw: str, key: str) -> str:
         return match.group(1).strip()
 
 
+def embedded_question(value: Any) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    matches = re.findall(r"[^.!?]{12,}\?", text)
+    return matches[-1].strip() if matches else ""
+
+
+def clean_spoken_reply(value: Any) -> str:
+    """Keep acknowledgement text in reply; questions belong exclusively in question."""
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not text:
+        return ""
+    parts = re.split(r"(?<=[.!?])\s+", text)
+    kept = [part.strip() for part in parts if part.strip() and "?" not in part]
+    cleaned = " ".join(kept).strip()
+    if not cleaned and "?" in text:
+        cleaned = re.sub(r"[^?]*\?", "", text, count=1).strip(" .")
+    return cleaned[:360]
+
+
 def parse_json(raw: str) -> dict[str, Any]:
     raw = raw.strip()
     try:
@@ -431,7 +451,14 @@ def parse_json(raw: str) -> dict[str, Any]:
     result["feedback"] = [item for item in _clean_list(result.get("feedback", []), 2) if item.casefold() not in placeholders]
     legacy_followups = result.get("followups", result.get("follow_up", []))
     result["followups"] = [item for item in _clean_list(legacy_followups, 1) if item.casefold() not in placeholders]
+    explicit_question = bool(str(result.get("question") or "").strip())
+    explicit_followups = bool(result["followups"])
+    raw_reply = result.get("reply") or result.get("response") or ""
     result["question"] = str(result.get("question") or "").strip()
+    embedded_question_found = False
+    if not result["question"]:
+        result["question"] = embedded_question(raw_reply)
+        embedded_question_found = bool(result["question"])
     if not result["question"] and result["followups"]:
         result["question"] = result["followups"][0]
     if not result["question"]:
@@ -440,7 +467,7 @@ def parse_json(raw: str) -> dict[str, Any]:
         result["question"] = ""
     result["question_kind"] = str(result.get("question_kind") or "").strip().lower()
     if result["question_kind"] not in {"followup", "planned", "clarification", "close"}:
-        result["question_kind"] = "followup" if result["question"] else "planned"
+        result["question_kind"] = "followup" if explicit_followups or embedded_question_found else "planned"
     result["should_advance"] = bool(result.get("should_advance", result["question_kind"] in {"planned", "close"}))
     result["covered"] = _clean_list(result.get("covered", []), 6)
     result["missing"] = _clean_list(result.get("missing", []), 6)
@@ -448,7 +475,7 @@ def parse_json(raw: str) -> dict[str, Any]:
         result["score"] = max(0, min(5, int(float(result.get("score", 0)))))
     except (TypeError, ValueError):
         result["score"] = 0
-    result["reply"] = str(result.get("reply") or result.get("response") or "").strip()
+    result["reply"] = clean_spoken_reply(raw_reply)
     result["next_question"] = str(result.get("next_question") or result["question"] or "").strip()
     result["notes"] = str(result.get("notes") or "").strip()
     if result["next_question"].casefold() in placeholders:
@@ -543,25 +570,29 @@ def interview_corpus(session: Session, candidate_text: str = "") -> str:
     return corpus[:3600]
 
 
-def next_distinct_planned_question(session: Session) -> str:
+def next_distinct_planned_question(session: Session, candidate_text: str = "") -> str:
     start = session.current_index + 1
     for index in range(start, len(session.questions)):
         question = usable_question(session.questions[index])
         if question and not forbidden_question(question, session) and not repeated_question(question, session):
             return question
     missing = next((item for item in reversed(session.missing_topics) if item.strip()), "a decisão mais importante")
+    topic_tokens = normalized_question_tokens(candidate_text)
+    topic = sorted(topic_tokens, key=lambda item: (-len(item), item))[0] if topic_tokens else "essa experiência"
     alternatives = [
         f"Que impacto concreto teve essa experiência e como o mediste?",
         f"Que decisão tomaste nesse contexto e que alternativa rejeitaste?",
         f"O que aprendeste com essa experiência e o que farias de forma diferente?",
         f"Como explicarias essa experiência a uma pessoa não técnica?",
+        f"Que risco principal tiveste de gerir nessa experiência?",
+        f"Como colaboraste com outras pessoas nesse trabalho?",
+        f"Que sinal te mostrou que a solução estava a funcionar?",
+        f"Que parte de {topic} gostarias de melhorar hoje?",
     ]
     for question in alternatives:
-        if missing and missing.casefold() not in question.casefold():
-            question = f"Podes desenvolver o ponto sobre {missing.lower()}?"
         if not repeated_question(question, session) and not forbidden_question(question, session):
             return question
-    return "Que novo aspeto desta experiência ainda não explorámos?"
+    return ""
 
 
 def fallback_reply(question_kind: str) -> str:
@@ -924,9 +955,11 @@ def ask(payload: AskRequest) -> dict[str, Any]:
     except (OSError, subprocess.SubprocessError, ValueError) as exc:
         raise HTTPException(503, f"LLM indisponível: {exc}") from exc
     llm_ms = round((time.perf_counter() - llm_started) * 1000, 1)
-    result["reply"] = str(result.get("reply") or fallback_reply(str(result.get("question_kind", ""))))
+    result["reply"] = clean_spoken_reply(result.get("reply")) or fallback_reply(str(result.get("question_kind", "")))
     result["covered"] = _clean_list(result.get("covered", []), 6)
     result["missing"] = _clean_list(result.get("missing", []), 6)
+    session.covered_topics = list(dict.fromkeys((session.covered_topics + result["covered"])[-24:]))
+    session.missing_topics = list(dict.fromkeys((session.missing_topics + result["missing"])[-24:]))
     candidate_question = usable_question(result.get("question"))
     if not candidate_question:
         candidate_question = usable_question(result.get("followups", [""])[0] if result.get("followups") else "")
@@ -941,7 +974,7 @@ def ask(payload: AskRequest) -> dict[str, Any]:
     if wants_followup and session.followup_count >= session.max_followups:
         wants_followup = False
         candidate_question = ""
-    next_planned = next_distinct_planned_question(session)
+    next_planned = next_distinct_planned_question(session, candidate_text)
     if wants_followup:
         result["question"] = candidate_question
         result["next_question"] = candidate_question
@@ -954,13 +987,17 @@ def ask(payload: AskRequest) -> dict[str, Any]:
         session.pending_question = None
         session.current_index = min(session.current_index + 1, len(session.questions) - 1)
         session.followup_count = 0
-        result["question"] = next_planned
-        result["question_kind"] = "planned" if "Obrigado" not in next_planned else "close"
+        session.pending_question = next_planned or None
+        if next_planned:
+            result["question"] = next_planned
+            result["question_kind"] = "planned"
+        else:
+            result["reply"] = f"{result['reply']} Obrigado pela partilha; já explorámos este tema por vários ângulos."
+            result["question"] = ""
+            result["question_kind"] = "close"
         result["should_advance"] = True
         result["next_question"] = next_planned
         result["is_followup"] = False
-    session.covered_topics = list(dict.fromkeys((session.covered_topics + result["covered"])[-24:]))
-    session.missing_topics = list(dict.fromkeys((session.missing_topics + result["missing"])[-24:]))
     session.history.append({
         "question": current_question,
         "answer": candidate_text,
