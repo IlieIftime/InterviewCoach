@@ -1,5 +1,17 @@
 # Northstar Browser Local
 
+## Iteracao de performance e integridade
+
+`inference.worker.js` executa a inferencia fora da thread principal. Assim, o download, o WebGPU/WASM e a geracao nao bloqueiam os controlos de voz nem a renderizacao da conversa. O service worker guarda o shell, o worker e o manifesto; os pesos continuam a ser guardados pelo cache do Transformers.js.
+
+O `model-manifest.json` identifica a versao do modelo e do runtime. Quando forem disponibilizados shards locais em `browser-local/model-artifacts`, gerar hashes SHA-256 com:
+
+```powershell
+..\scripts\build_browser_manifest.ps1
+```
+
+O browser local e um complemento: para qualidade de conversa superior, usar o servidor local com Ollama, Whisper e Piper. Uma página GitHub Pages não pode chamar automaticamente `http://127.0.0.1:8000` a partir de outro dispositivo; para esse caso publicar o modo browser ou servir a API através de uma origem HTTPS controlada.
+
 Variante do coach que corre diretamente no browser, sem FastAPI, Ollama ou llama-server. Depois da instalação inicial, funciona como uma PWA independente do PC que serviu os ficheiros.
 
 ## Arrancar

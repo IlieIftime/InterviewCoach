@@ -1,10 +1,11 @@
-import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.2';
+import { readModelCache, writeModelCache } from './model-cache.js';
 
 const MODEL_ID = 'onnx-community/Qwen2.5-0.5B-Instruct-ONNX';
-env.allowLocalModels = false;
-env.useBrowserCache = true;
 const state = {
-  generator: null,
+  worker: null,
+  modelReady: false,
+  workerRequestId: 0,
+  workerPending: new Map(),
   config: null,
   questions: [],
   index: 0,
@@ -30,18 +31,77 @@ if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('./sw.js').catch(() => {});
 }
 
+function ensureWorker() {
+  if (state.worker) return state.worker;
+  state.worker = new Worker('./inference.worker.js', {type: 'module'});
+  state.worker.onmessage = (message) => {
+    const data = message.data || {};
+    if (data.type === 'progress') {
+      const event = data.event || {};
+      if (event.status === 'progress') setProgress(Math.max(8, Math.round(event.progress)), `A preparar modelo local: ${Math.round(event.progress)}%`);
+      if (event.status === 'done') setProgress(92, 'Modelo em cache. A iniciar sessão...');
+      return;
+    }
+    if (data.type === 'ready') {
+      state.modelReady = true;
+      setProgress(100, data.device === 'webgpu' ? 'Modelo pronto com WebGPU.' : 'Modelo pronto com WASM.');
+      $('runtime').textContent = data.device === 'webgpu' ? 'Modelo local · WebGPU' : 'Modelo local · WASM';
+      $('runtime').className = 'runtime ready';
+      return;
+    }
+    const pending = state.workerPending.get(data.id);
+    if (!pending) return;
+    state.workerPending.delete(data.id);
+    if (data.type === 'error') pending.reject(new Error(data.message));
+    else pending.resolve(data.output);
+  };
+  state.worker.onerror = (error) => {
+    for (const pending of state.workerPending.values()) pending.reject(error);
+    state.workerPending.clear();
+  };
+  return state.worker;
+}
+
+function generateInWorker(prompt, options) {
+  const worker = ensureWorker();
+  const id = ++state.workerRequestId;
+  return new Promise((resolve, reject) => {
+    state.workerPending.set(id, {resolve, reject});
+    worker.postMessage({type: 'generate', id, prompt, options});
+  });
+}
+
 function setProgress(value, label) {
   $('progress').style.width = `${value}%`;
   $('download-label').textContent = label;
 }
 
 async function loadModel() {
-  if (state.generator) return true;
+  if (state.modelReady) return true;
   $('runtime').textContent = 'A descarregar modelo local';
   try {
     if (navigator.storage?.persist) await navigator.storage.persist();
-    const cached = localStorage.getItem(`northstar-model:${MODEL_ID}`) === 'ready';
+    const metadata = await readModelCache(MODEL_ID);
+    const cached = metadata?.status === 'ready' || localStorage.getItem(`northstar-model:${MODEL_ID}`) === 'ready';
     setProgress(cached ? 35 : 8, cached ? 'A reutilizar o modelo guardado neste browser...' : 'A preparar o modelo quantizado...');
+    const worker = ensureWorker();
+    await new Promise((resolve, reject) => {
+      const onReady = (event) => {
+        if (event.data?.type !== 'ready') return;
+        worker.removeEventListener('message', onReady);
+        resolve();
+      };
+      worker.addEventListener('message', onReady);
+      worker.postMessage({type: 'load'});
+      setTimeout(() => {
+        worker.removeEventListener('message', onReady);
+        if (!state.modelReady) reject(new Error('Tempo excedido ao carregar o modelo local.'));
+      }, 180000);
+    });
+    localStorage.setItem(`northstar-model:${MODEL_ID}`, 'ready');
+    await writeModelCache(MODEL_ID, '2026-09-16', navigator.gpu ? 'webgpu' : 'wasm');
+    return true;
+    /* Legacy main-thread loader retained as documentation; the worker above is authoritative.
     const device = navigator.gpu ? 'webgpu' : 'wasm';
     state.generator = await pipeline('text-generation', MODEL_ID, {
       device,
@@ -55,7 +115,7 @@ async function loadModel() {
     localStorage.setItem(`northstar-model:${MODEL_ID}`, 'ready');
     $('runtime').textContent = device === 'webgpu' ? 'Modelo local · WebGPU' : 'Modelo local · WASM';
     $('runtime').className = 'runtime ready';
-    $('setup-form').querySelector('button').textContent = 'Modelo pronto';
+    $('setup-form').querySelector('button').textContent = 'Modelo pronto'; */
     return true;
   } catch (error) {
     $('runtime').textContent = 'Motor local indisponível';
@@ -102,8 +162,8 @@ function cleanModelText(raw) {
 async function coachAnswer(answer) {
   const rubric = localRubric(answer);
   let generated = '';
-  if (state.generator) {
-    const output = await state.generator(promptForAnswer(answer), { max_new_tokens: 64, temperature: 0.35, do_sample: true, return_full_text: false });
+  if (state.modelReady) {
+    const output = await generateInWorker(promptForAnswer(answer), { max_new_tokens: 96, temperature: 0.25, do_sample: true, return_full_text: false });
     generated = Array.isArray(output) ? output[0].generated_text : output.generated_text;
   }
   const cleaned = cleanModelText(generated || '');
@@ -314,7 +374,7 @@ $('setup-form').addEventListener('submit', async (event) => {
   } finally {
     button.disabled = false;
     if (!coach.classList.contains('hidden')) button.textContent = 'Modelo pronto';
-    else if (!state.generator) button.textContent = 'Tentar novamente';
+    else if (!state.modelReady) button.textContent = 'Tentar novamente';
   }
 });
 

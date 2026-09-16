@@ -1,6 +1,6 @@
 const state = {
   sessionId: null,
-  config: {language: 'pt-PT', min_pause_seconds: 1.5, duration_minutes: 20, script_fidelity: 'adaptive', model: ''},
+  config: {language: 'pt-PT', min_pause_seconds: 1, short_pause_ms: 1000, long_pause_ms: 3500, max_answer_seconds: 90, confirm_threshold: 0.6, duration_minutes: 20, script_fidelity: 'adaptive', model: ''},
   questions: [],
   current: 0,
   socket: null,
@@ -34,6 +34,16 @@ const state = {
     localStartedAt: 0,
     localLastVoiceAt: 0,
     localHadSpeech: false,
+    localNoiseFloor: 0.012,
+    localSpeechThreshold: 0.035,
+    localCalibrationFrames: 0,
+    localCalibrationSum: 0,
+    listenStartedAt: 0,
+    listenMs: null,
+    audioMs: null,
+    interruptions: 0,
+    interrupted: false,
+    sttNeedsConfirmation: false,
     lastConfidence: null,
     captureMode: 'text',
     autoSubmitted: false,
@@ -88,14 +98,13 @@ function sessionLanguage() {
 }
 
 function pauseDelayMs() {
-  const configured = Number(state.config.min_pause_seconds || $('min-pause-seconds')?.value || 1.5);
-  return Math.max(900, Math.min(4000, configured * 1000));
+  const configured = Number(state.config.short_pause_ms || (Number($('min-pause-seconds')?.value || 1.5) * 1000));
+  return Math.max(800, Math.min(5000, configured));
 }
 
 function expectedAnswerWindowMs() {
-  const question = state.questions[state.current] || '';
-  const words = question.trim().split(/\s+/).filter(Boolean).length;
-  return Math.max(18000, Math.min(75000, 18000 + words * 2200));
+  const configured = Number(state.config.max_answer_seconds || 90);
+  return Math.max(15000, Math.min(180000, configured * 1000));
 }
 
 function clearAnswerWindowTimer() {
@@ -158,17 +167,29 @@ function connectSocket() {
     const result = JSON.parse(event.data);
     state.answerPending = false;
     $('thinking').classList.add('hidden');
-    updateInsights(result);
+    if (!result.needs_confirmation) updateInsights(result);
     if (result.stt_confidence != null) {
       setVoiceStatus(`Resposta recebida (${Math.round(Number(result.stt_confidence) * 100)}% de confiança STT).`);
     }
-    if (result.next_question) {
+    const reply = String(result.reply || '').trim();
+    const question = String(result.question || result.next_question || '').trim();
+    const spoken = [reply, question].filter(Boolean).join(' ');
+    if (spoken) {
+      addMessage('agent', spoken);
+      speakAgent(spoken);
+    }
+    if (question && !result.needs_confirmation) {
       if (!result.is_followup) state.current = Math.min(state.current + 1, state.questions.length - 1);
-      addMessage('agent', result.next_question);
-      speakAgent(result.next_question);
       renderQuestions();
     }
-    scheduleActiveVoiceRestart();
+    if (result.needs_confirmation) {
+      state.voice.sttNeedsConfirmation = true;
+      state.voice.activeRequested = false;
+      stopVoiceRecognition();
+    } else {
+      state.voice.sttNeedsConfirmation = false;
+      scheduleActiveVoiceRestart();
+    }
   };
   state.socket.onerror = () => {
     state.answerPending = false;
@@ -195,6 +216,11 @@ $('setup-form').addEventListener('submit', async (event) => {
     script_fidelity: $('script-fidelity').value,
     duration_minutes: Number($('duration-minutes').value || 20),
     min_pause_seconds: Number($('min-pause-seconds').value || 1.5),
+    short_pause_ms: Number($('short-pause-ms').value || 1000),
+    long_pause_ms: Number($('long-pause-ms').value || 3500),
+    max_answer_seconds: Number($('max-answer-seconds').value || 90),
+    confirm_threshold: Number($('confirm-threshold').value || 0.6),
+    max_followups: Number($('max-followups').value || 2),
     model: $('llm-model').value,
   };
   const response = await fetch('/start', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
@@ -210,6 +236,10 @@ $('answer-form').addEventListener('submit', (event) => {
   const captureMode = voice.captureMode || 'text';
   const sttConfidence = voice.lastConfidence;
   const autoSubmitted = Boolean(voice.autoSubmitted);
+  const listenMs = voice.listenMs ?? (voice.listenStartedAt ? Date.now() - voice.listenStartedAt : null);
+  const audioMs = voice.localStartedAt ? Date.now() - voice.localStartedAt : null;
+  const sttConfirmed = Boolean(voice.sttNeedsConfirmation && /^(sim|s[ií]m|correto|certo|isso|confirmo)/i.test(text));
+  const interrupted = Boolean(voice.interrupted);
   state.answerPending = true;
   cancelAgentSpeech();
   clearTimeout(state.voice.silenceTimer);
@@ -223,10 +253,19 @@ $('answer-form').addEventListener('submit', (event) => {
     stt_confidence: sttConfidence,
     capture_mode: captureMode,
     auto_submitted: autoSubmitted,
+    listen_ms: listenMs,
+    audio_ms: audioMs,
+    stt_confirmed: sttConfirmed,
+    interrupted,
   }));
   voice.lastConfidence = null;
   voice.captureMode = 'text';
   voice.autoSubmitted = false;
+  voice.listenStartedAt = 0;
+  voice.listenMs = null;
+  voice.audioMs = null;
+  voice.sttNeedsConfirmation = false;
+  voice.interrupted = false;
 });
 
 $('answer').addEventListener('keydown', (event) => {
@@ -396,12 +435,19 @@ function monitorLocalSilence() {
     const data = new Uint8Array(analyser.fftSize);
     analyser.getByteTimeDomainData(data);
     const rms = Math.sqrt(data.reduce((sum, value) => sum + ((value - 128) / 128) ** 2, 0) / data.length);
-    if (rms > 0.035) {
+    if (voice.localCalibrationFrames < 18 && !voice.localHadSpeech) {
+      voice.localCalibrationSum += rms;
+      voice.localCalibrationFrames += 1;
+      voice.localNoiseFloor = voice.localCalibrationSum / voice.localCalibrationFrames;
+      voice.localSpeechThreshold = Math.max(0.025, voice.localNoiseFloor * 2.4);
+    }
+    if (rms > voice.localSpeechThreshold) {
       voice.localHadSpeech = true;
       voice.localLastVoiceAt = Date.now();
     }
     const elapsed = Date.now() - voice.localStartedAt;
-    if (voice.localHadSpeech && elapsed > 1400 && Date.now() - voice.localLastVoiceAt > pauseDelayMs()) {
+    const silenceDelay = Number(state.config.long_pause_ms || 3500);
+    if (voice.localHadSpeech && elapsed > 1400 && Date.now() - voice.localLastVoiceAt > Math.max(pauseDelayMs(), silenceDelay)) {
       voice.autoSubmitted = voice.mode === 'active';
       finishLocalRecording(true);
       return;
@@ -442,7 +488,11 @@ async function submitLocalAudio(blob, mimeType) {
       if (voice.activeRequested) scheduleActiveVoiceRestart();
       return;
     }
-    if (voice.mode === 'active') {
+    if (voice.lastConfidence != null && voice.lastConfidence < Number(state.config.confirm_threshold || 0.6)) {
+      setVoiceStatus(`A confirmar transcrição (${Math.round(voice.lastConfidence * 100)}% de confiança)...`);
+      voice.autoSubmitted = true;
+      $('answer-form').requestSubmit();
+    } else if (voice.mode === 'active') {
       voice.autoSubmitted = true;
       $('answer-form').requestSubmit();
     } else {
@@ -482,8 +532,15 @@ async function startLocalRecognition(mode) {
     voice.localCancel = false;
     voice.localSubmit = false;
     voice.localStartedAt = Date.now();
+    voice.listenStartedAt = voice.localStartedAt;
+    voice.listenMs = null;
+    voice.audioMs = null;
     voice.localLastVoiceAt = voice.localStartedAt;
     voice.localHadSpeech = false;
+    voice.localCalibrationFrames = 0;
+    voice.localCalibrationSum = 0;
+    voice.localNoiseFloor = 0.012;
+    voice.localSpeechThreshold = 0.035;
     voice.captureMode = mode === 'active' ? 'active-local' : 'local';
     voice.lastConfidence = null;
     voice.autoSubmitted = false;
@@ -508,6 +565,8 @@ async function startLocalRecognition(mode) {
       voice.localStream = null;
       voice.localChunks = [];
       voice.running = false;
+      voice.listenMs = voice.listenStartedAt ? Date.now() - voice.listenStartedAt : null;
+      voice.audioMs = voice.localStartedAt ? Date.now() - voice.localStartedAt : null;
       voice.localSubmit = false;
       if (shouldSubmit && blob.size > 0) await submitLocalAudio(blob, voice.localMimeType);
       else if (!voice.activeRequested && !voice.explicitRequested) setVoiceStatus('Microfone desligado');
@@ -541,6 +600,10 @@ async function startLocalRecognition(mode) {
 
 function stopVoiceRecognition(options = {}) {
   const voice = state.voice;
+  if (voice.speaking) {
+    voice.interrupted = true;
+    voice.interruptions += 1;
+  }
   clearTimeout(voice.restartTimer);
   voice.restartTimer = null;
   clearAnswerWindowTimer();
@@ -595,6 +658,8 @@ function startBrowserRecognition(mode) {
   recognition.onstart = () => {
     if (voice.recognition !== recognition) return;
     voice.running = true;
+    voice.listenStartedAt = Date.now();
+    voice.listenMs = null;
     if (mode === 'active') scheduleAnswerWindowTimer();
     updateVoiceControls();
     setVoiceStatus(mode === 'active' ? 'A ouvir com STT browser. Uma pausa envia.' : 'A gravar com STT browser. Clica para terminar.');
@@ -602,6 +667,7 @@ function startBrowserRecognition(mode) {
   recognition.onend = () => {
     if (voice.recognition !== recognition) return;
     voice.running = false;
+    voice.listenMs = voice.listenStartedAt ? Date.now() - voice.listenStartedAt : null;
     if (mode === 'active' && voice.activeRequested && !state.answerPending && $('thinking').classList.contains('hidden')) {
       scheduleActiveVoiceRestart();
       return;
@@ -637,6 +703,9 @@ function startBrowserRecognition(mode) {
     clearTimeout(voice.silenceTimer);
     if (mode === 'active' && finalText.trim()) {
       voice.silenceTimer = setTimeout(() => {
+        if (voice.lastConfidence != null && voice.lastConfidence < Number(state.config.confirm_threshold || 0.6)) {
+          setVoiceStatus(`A confirmar transcrição (${Math.round(voice.lastConfidence * 100)}% de confiança)...`);
+        }
         voice.autoSubmitted = true;
         $('answer-form').requestSubmit();
       }, pauseDelayMs());
@@ -724,7 +793,12 @@ async function endSession() {
   state.answerPending = false;
   clearVoiceTimers();
   stopVoiceRecognition();
-  if (state.sessionId) await fetch('/stop', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({session_id: state.sessionId}) });
+  if (state.sessionId) {
+    const rawNps = window.prompt('NPS: de 0 a 10, quão provável é recomendares esta entrevista?', '8');
+    const nps = rawNps == null || rawNps.trim() === '' ? null : Math.max(0, Math.min(10, Number(rawNps)));
+    const feedback = Number.isFinite(nps) ? {nps_score: nps} : {};
+    await fetch('/stop', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({session_id: state.sessionId, ...feedback}) });
+  }
   if (state.socket) state.socket.close();
   state.socket = null;
   state.sessionId = null;

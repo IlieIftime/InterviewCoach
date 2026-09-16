@@ -46,7 +46,12 @@ Como explicarias uma falha num sistema de ML em produção?</textarea></label>
         <div class="form-grid setup-options">
           <label>Fidelidade ao guião<select id="script-fidelity"><option value="adaptive" selected>Adaptativa</option><option value="strict">Estrita</option><option value="free">Livre</option></select></label>
           <label>Tempo de entrevista (minutos)<input id="duration-minutes" type="number" min="5" max="120" value="20"></label>
-          <label>Pausa para enviar (segundos)<input id="min-pause-seconds" type="number" min="0.8" max="4" step="0.1" value="1.5"></label>
+          <label>Pausa curta para enviar (segundos)<input id="min-pause-seconds" type="number" min="0.8" max="4" step="0.1" value="1.0"></label>
+          <label>Pausa longa (ms)<input id="long-pause-ms" type="number" min="1500" max="8000" step="100" value="3500"></label>
+          <label>Timeout máximo da resposta (s)<input id="max-answer-seconds" type="number" min="15" max="180" value="90"></label>
+          <label>Confiança STT mínima<input id="confirm-threshold" type="number" min="0.2" max="0.95" step="0.05" value="0.60"></label>
+          <label>Follow-ups por tema<input id="max-followups" type="number" min="0" max="5" value="2"></label>
+          <input id="short-pause-ms" type="hidden" value="1000">
           <label>Nota<input value="A escuta ativa envia após esta pausa, sem cortar frases curtas." disabled></label>
         </div>
       </form>

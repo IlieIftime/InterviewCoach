@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "version": "2026-09-16",
+  "model": "onnx-community/Qwen2.5-0.5B-Instruct-ONNX",
+  "runtime": "@huggingface/transformers@3.7.2",
+  "quantization": {
+    "webgpu": "q4",
+    "wasm": "q8"
+  },
+  "cache": "Transformers.js browser cache + service worker shell",
+  "artifacts": [],
+  "integrity_note": "Os pesos são obtidos do repositório público do modelo; este manifesto valida a versão da aplicação. Para distribuição privada, gerar hashes dos shards com scripts/build_browser_manifest.ps1."
+}

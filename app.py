@@ -5,6 +5,7 @@ import base64
 import asyncio
 import json
 import os
+import re
 import subprocess
 import tempfile
 import threading
@@ -39,8 +40,13 @@ DEFAULT_OLLAMA_GENERATE_URL = "http://127.0.0.1:11434/api/generate"
 PIPER_VOICE_DIR = Path(__file__).resolve().parent / "models" / "piper"
 DEFAULT_PIPER_VOICE = PIPER_VOICE_DIR / "pt_PT-tugao-medium.onnx"
 DEFAULT_LANGUAGE = "pt-PT"
-DEFAULT_MIN_PAUSE_SECONDS = 1.5
+DEFAULT_MIN_PAUSE_SECONDS = 1.0
 DEFAULT_DURATION_MINUTES = 20
+DEFAULT_SHORT_PAUSE_MS = 1000
+DEFAULT_LONG_PAUSE_MS = 3500
+DEFAULT_MAX_ANSWER_SECONDS = 90
+DEFAULT_CONFIRM_THRESHOLD = 0.60
+DEFAULT_MAX_FOLLOWUPS = 2
 DEFAULT_MODEL_OPTIONS = ["qwen2.5:0.5b-instruct", "qwen2.5:1.5b-instruct", "qwen2.5:7b"]
 
 
@@ -64,6 +70,18 @@ class Session:
     min_pause_seconds: float = DEFAULT_MIN_PAUSE_SECONDS
     model: str = ""
     started_at: float = field(default_factory=time.time)
+    covered_topics: list[str] = field(default_factory=list)
+    missing_topics: list[str] = field(default_factory=list)
+    followup_count: int = 0
+    interruption_count: int = 0
+    pending_transcript: str | None = None
+    pending_confidence: float | None = None
+    confirmation_pending: bool = False
+    short_pause_ms: int = DEFAULT_SHORT_PAUSE_MS
+    long_pause_ms: int = DEFAULT_LONG_PAUSE_MS
+    max_answer_seconds: int = DEFAULT_MAX_ANSWER_SECONDS
+    confirm_threshold: float = DEFAULT_CONFIRM_THRESHOLD
+    max_followups: int = DEFAULT_MAX_FOLLOWUPS
 
 
 class StartRequest(BaseModel):
@@ -81,6 +99,11 @@ class StartRequest(BaseModel):
     duration_minutes: int = Field(default=DEFAULT_DURATION_MINUTES, ge=5, le=120)
     min_pause_seconds: float = Field(default=DEFAULT_MIN_PAUSE_SECONDS, ge=0.8, le=4.0)
     model: str = Field(default="", max_length=80)
+    short_pause_ms: int = Field(default=DEFAULT_SHORT_PAUSE_MS, ge=600, le=5000)
+    long_pause_ms: int = Field(default=DEFAULT_LONG_PAUSE_MS, ge=1500, le=8000)
+    max_answer_seconds: int = Field(default=DEFAULT_MAX_ANSWER_SECONDS, ge=15, le=180)
+    confirm_threshold: float = Field(default=DEFAULT_CONFIRM_THRESHOLD, ge=0.2, le=0.95)
+    max_followups: int = Field(default=DEFAULT_MAX_FOLLOWUPS, ge=0, le=5)
 
 
 class AskRequest(BaseModel):
@@ -91,6 +114,10 @@ class AskRequest(BaseModel):
     stt_confidence: float | None = Field(default=None, ge=0, le=1)
     capture_mode: str = "text"
     auto_submitted: bool = False
+    listen_ms: float | None = Field(default=None, ge=0)
+    audio_ms: float | None = Field(default=None, ge=0)
+    stt_confirmed: bool = False
+    interrupted: bool = False
 
 
 class TranscribeRequest(BaseModel):
@@ -107,6 +134,11 @@ class SpeakRequest(BaseModel):
 
 class StopRequest(BaseModel):
     session_id: str
+    nps_score: int | None = Field(default=None, ge=0, le=10)
+    naturalness: int | None = Field(default=None, ge=0, le=10)
+    listening_quality: int | None = Field(default=None, ge=0, le=10)
+    followup_relevance: int | None = Field(default=None, ge=0, le=10)
+    notes: str = ""
 
 
 PROMPT = """SYSTEM:
@@ -146,6 +178,53 @@ Campos JSON obrigatórios: feedback (0-2 observações concretas sobre a respost
 """
 
 
+PROMPT = """SYSTEM:
+És o entrevistador e coach da conversa. Desempenha a persona indicada e fala diretamente com o candidato, usando português de Portugal. Não és apenas um gerador de perguntas: primeiro reconhece brevemente o que foi dito, depois decide se falta informação e só então escolhe a pergunta seguinte.
+
+Regras:
+- sê humano, caloroso e conciso;
+- nunca inventes experiência ou resultados;
+- nunca repitas uma pergunta já respondida;
+- faz uma pergunta de cada vez;
+- se faltar uma evidência importante, faz um follow-up específico;
+- se a resposta cobrir a pergunta, avança no guião;
+- respeita perguntas e temas proibidos;
+- fala com "tu" e nunca escrevas "o candidato" como narrador;
+- o campo reply será lido em voz alta; feedback e notes são privados.
+
+Contexto da sessão:
+Persona: {persona}
+Instruções: {instructions}
+Evitar: {avoid}
+Critérios obrigatórios: {must}
+Contexto do candidato: {candidate_context}
+Modo do guião: {script_fidelity}
+Perguntas permitidas: {questions_to_ask}
+Perguntas a evitar: {questions_to_avoid}
+Tópicos já cobertos: {covered_topics}
+Pontos ainda em falta: {missing_topics}
+
+Histórico recente:
+{history}
+
+Pergunta atual: {current_question}
+Resposta transcrita: {candidate_text}
+Próxima pergunta planeada: {next_question_hint}
+
+Devolve apenas JSON válido com estes campos:
+reply (uma ou duas frases naturais para dizer em voz alta),
+question (uma pergunta real ou string vazia),
+question_kind (followup, planned, clarification ou close),
+should_advance (boolean),
+covered (lista curta),
+missing (lista curta),
+feedback (até duas observações privadas),
+score (0 a 5),
+notes (uma frase privada).
+Não uses nomes de campos como conteúdo e não devolvas markdown.
+"""
+
+
 def project_path(filename: str) -> Path:
     return Path(__file__).resolve().parent / filename
 
@@ -165,7 +244,7 @@ def build_prompt(session: Session, candidate_text: str) -> str:
     next_index = session.current_index + 1
     next_question = session.questions[next_index] if next_index < len(session.questions) else "Que perguntas tens para mim?"
     history = "\n".join(
-        f"Turn {index}: Question: {turn.get('question', '')}\nAnswer: {turn.get('answer', '')}"
+        f"Turn {index}: Question: {turn.get('question', '')}\nAnswer: {turn.get('answer', '')}\nAgent reply: {turn.get('reply', '')}\nCovered: {turn.get('covered', [])}\nMissing: {turn.get('missing', [])}"
         for index, turn in enumerate(session.history[-6:], start=max(1, len(session.history) - 5))
     ) or "No previous answers; this is the first turn."
     prompt = PROMPT.format(
@@ -177,6 +256,12 @@ def build_prompt(session: Session, candidate_text: str) -> str:
         current_question=question,
         candidate_text=candidate_text[:2200],
         next_question_hint=next_question,
+        must=session.must or "Nenhum critério adicional.",
+        script_fidelity=session.script_fidelity,
+        questions_to_ask=json.dumps(session.questions_to_ask or session.questions, ensure_ascii=False),
+        questions_to_avoid=json.dumps(session.questions_to_avoid, ensure_ascii=False),
+        covered_topics=json.dumps(session.covered_topics[-12:], ensure_ascii=False),
+        missing_topics=json.dumps(session.missing_topics[-12:], ensure_ascii=False),
     )
     extra_rules = f"""
 REGRAS ESTRUTURADAS DA SESSAO:
@@ -194,6 +279,7 @@ Se for adaptive, escolhe follow-ups curtos e naturais com base na ultima respost
 Se for free, prioriza uma conversa coerente e pode alterar a ordem.
 Nunca repitas uma pergunta ja respondida. Faz uma pergunta de cada vez.
 Fala diretamente com o candidato usando "tu"; nao escrevas "o candidato" como se estivesses a produzir um relatorio.
+Mantem o JSON compacto: reply com no maximo 160 caracteres, feedback com um item, covered e missing com no maximo dois itens curtos, e notes com no maximo 100 caracteres.
 """
     return prompt + extra_rules
 
@@ -202,6 +288,12 @@ def fake_coach(session: Session, candidate_text: str) -> dict[str, Any]:
     next_index = session.current_index + 1
     next_question = session.questions[next_index] if next_index < len(session.questions) else "Obrigado. Que perguntas tens para mim?"
     return {
+        "reply": "Percebi. Há um ponto interessante aí; vou pedir-te um exemplo concreto para perceber melhor o impacto.",
+        "question": "Que decisão técnica teve maior impacto no resultado?",
+        "question_kind": "followup",
+        "should_advance": False,
+        "covered": ["experiência ou contexto apresentado"],
+        "missing": ["exemplo concreto", "impacto mensurável"],
         "feedback": ["Resposta clara e relevante.", "Acrescenta um resultado mensurável ou um trade-off técnico."],
         "followups": ["Que decisão técnica teve maior impacto no resultado?"] if candidate_text else [],
         "next_question": next_question,
@@ -220,7 +312,7 @@ def call_openai_compatible(prompt: str, model: str | None = None) -> str:
             "model": model or os.getenv("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL),
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.2,
-            "max_tokens": int(os.getenv("LLM_MAX_TOKENS", "128")),
+            "max_tokens": int(os.getenv("LLM_MAX_TOKENS", "160")),
         },
         timeout=180,
     )
@@ -257,7 +349,7 @@ def call_ollama(prompt: str, model_override: str = "") -> dict[str, Any]:
                 "options": {
                     "temperature": 0.1,
                     "num_ctx": int(os.getenv("LLM_CONTEXT", "2048")),
-                    "num_predict": int(os.getenv("LLM_MAX_TOKENS", "128")),
+                    "num_predict": int(os.getenv("LLM_MAX_TOKENS", "160")),
                     "num_thread": int(os.getenv("LLM_THREADS", "4")),
                 },
             },
@@ -280,6 +372,26 @@ def call_ollama(prompt: str, model_override: str = "") -> dict[str, Any]:
     return parse_json(raw)
 
 
+def _clean_list(value: Any, limit: int = 4, max_chars: int = 220) -> list[str]:
+    values = value if isinstance(value, list) else [value]
+    cleaned: list[str] = []
+    for item in values:
+        text = str(item or "").strip()
+        if text and text not in cleaned:
+            cleaned.append(text[:max_chars])
+    return cleaned[:limit]
+
+
+def _extract_json_string(raw: str, key: str) -> str:
+    match = re.search(rf'"{re.escape(key)}"\s*:\s*"((?:\\.|[^"\\])*)', raw, re.DOTALL)
+    if not match:
+        return ""
+    try:
+        return str(json.loads('"' + match.group(1) + '"')).strip()
+    except json.JSONDecodeError:
+        return match.group(1).strip()
+
+
 def parse_json(raw: str) -> dict[str, Any]:
     raw = raw.strip()
     try:
@@ -287,45 +399,59 @@ def parse_json(raw: str) -> dict[str, Any]:
     except json.JSONDecodeError:
         start, end = raw.find("{"), raw.rfind("}")
         if start < 0 or end <= start:
-            return {
-                "feedback": ["O modelo respondeu sem estrutura JSON; revê a resposta e acrescenta um exemplo concreto."],
-                "followups": [],
-                "next_question": "",
-                "score": 0,
-                "notes": raw[:280] or "Resposta do modelo vazia.",
+            result = {
+                "reply": _extract_json_string(raw, "reply"),
+                "question": _extract_json_string(raw, "question"),
+                "question_kind": _extract_json_string(raw, "question_kind"),
+                "notes": "O modelo devolveu JSON incompleto; foram recuperados os campos disponíveis.",
             }
         try:
-            result = json.loads(raw[start : end + 1])
+            if start >= 0 and end > start:
+                result = json.loads(raw[start : end + 1])
         except json.JSONDecodeError:
-            return {
-                "feedback": ["A resposta precisa de mais estrutura e clareza."],
-                "followups": [],
-                "next_question": "",
-                "score": 0,
-                "notes": raw[:280],
+            result = {
+                "reply": _extract_json_string(raw, "reply"),
+                "question": _extract_json_string(raw, "question"),
+                "question_kind": _extract_json_string(raw, "question_kind"),
+                "notes": "O modelo devolveu JSON incompleto; foram recuperados os campos disponíveis.",
             }
     if not isinstance(result, dict):
         raise ValueError("Resposta do modelo deve ser um objeto JSON")
-    result.setdefault("feedback", [])
-    result.setdefault("followups", [])
-    result.setdefault("next_question", "")
-    result.setdefault("score", 0)
-    result.setdefault("notes", "")
-    feedback = [str(item).strip() for item in result["feedback"] if str(item).strip()] if isinstance(result["feedback"], list) else [str(result["feedback"]).strip()]
-    followups = [str(item).strip() for item in result["followups"] if str(item).strip()] if isinstance(result["followups"], list) else [str(result["followups"] or "").strip()]
-    placeholders = {"ponto curto", "ponto 1", "ponto 2", "pergunta", "pergunta ou vazio", "follow-up ou vazio", "followup ou vazio", "frase curta", "vazio"}
-    result["feedback"] = [item for item in feedback if item.casefold() not in placeholders][:2]
-    result["followups"] = [item for item in followups if item and item.casefold() not in placeholders][:1]
+    placeholders = {
+        "ponto curto", "ponto 1", "ponto 2", "pergunta", "pergunta ou vazio",
+        "follow-up ou vazio", "followup ou vazio", "frase curta", "vazio", "string vazia",
+    }
+    result["feedback"] = [item for item in _clean_list(result.get("feedback", []), 2) if item.casefold() not in placeholders]
+    legacy_followups = result.get("followups", result.get("follow_up", []))
+    result["followups"] = [item for item in _clean_list(legacy_followups, 1) if item.casefold() not in placeholders]
+    result["question"] = str(result.get("question") or "").strip()
+    if not result["question"] and result["followups"]:
+        result["question"] = result["followups"][0]
+    if not result["question"]:
+        result["question"] = str(result.get("next_question") or "").strip()
+    if result["question"].casefold() in placeholders:
+        result["question"] = ""
+    result["question_kind"] = str(result.get("question_kind") or "").strip().lower()
+    if result["question_kind"] not in {"followup", "planned", "clarification", "close"}:
+        result["question_kind"] = "followup" if result["question"] else "planned"
+    result["should_advance"] = bool(result.get("should_advance", result["question_kind"] in {"planned", "close"}))
+    result["covered"] = _clean_list(result.get("covered", []), 6)
+    result["missing"] = _clean_list(result.get("missing", []), 6)
     try:
-        result["score"] = max(0, min(5, int(float(result["score"]))))
+        result["score"] = max(0, min(5, int(float(result.get("score", 0)))))
     except (TypeError, ValueError):
         result["score"] = 0
-    result["next_question"] = str(result["next_question"] or "").strip()
-    result["notes"] = str(result["notes"] or "").strip()
+    result["reply"] = str(result.get("reply") or result.get("response") or "").strip()
+    result["next_question"] = str(result.get("next_question") or result["question"] or "").strip()
+    result["notes"] = str(result.get("notes") or "").strip()
     if result["next_question"].casefold() in placeholders:
         result["next_question"] = ""
     if result["notes"].casefold() in placeholders:
         result["notes"] = "Resposta analisada no contexto da entrevista."
+    if not result["reply"]:
+        result["reply"] = "Percebi. Vou usar o que disseste para orientar a próxima pergunta."
+    if result["question"] and not result["followups"] and result["question_kind"] in {"followup", "clarification"}:
+        result["followups"] = [result["question"]]
     return result
 
 
@@ -334,6 +460,27 @@ def usable_question(value: Any) -> str:
     if len(question) < 12 or "?" not in question or question.casefold() in {"pergunta", "question", "follow-up", "followup"}:
         return ""
     return question
+
+
+def is_confirmation_yes(value: str) -> bool:
+    normalized = " ".join(value.casefold().strip().split()).strip(".!?,;:")
+    return normalized in {"sim", "sim está", "sim esta", "correto", "correcto", "certo", "isso", "é isso", "e isso", "confirmo"}
+
+
+def is_confirmation_no(value: str) -> bool:
+    normalized = " ".join(value.casefold().strip().split()).strip(".!?,;:")
+    return normalized == "não" or normalized == "nao" or normalized.startswith("não, ") or normalized.startswith("nao, ")
+
+
+def forbidden_question(question: str, session: Session) -> bool:
+    normalized = question.casefold().strip()
+    return any(item.casefold().strip() and item.casefold().strip() in normalized for item in session.questions_to_avoid)
+
+
+def fallback_reply(question_kind: str) -> str:
+    if question_kind in {"followup", "clarification"}:
+        return "Percebi. Vou aprofundar esse ponto."
+    return "Obrigado pela resposta. Vamos continuar."
 
 
 def get_whisper_model() -> Any:
@@ -583,6 +730,11 @@ def start_session(payload: StartRequest) -> dict[str, Any]:
         duration_minutes=payload.duration_minutes,
         min_pause_seconds=payload.min_pause_seconds,
         model=payload.model,
+        short_pause_ms=payload.short_pause_ms,
+        long_pause_ms=payload.long_pause_ms,
+        max_answer_seconds=payload.max_answer_seconds,
+        confirm_threshold=payload.confirm_threshold,
+        max_followups=payload.max_followups,
     )
     session_store.save(session_id, session)
     return {
@@ -595,6 +747,11 @@ def start_session(payload: StartRequest) -> dict[str, Any]:
             "duration_minutes": session.duration_minutes,
             "script_fidelity": session.script_fidelity,
             "model": session.model or os.getenv("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL),
+            "short_pause_ms": session.short_pause_ms,
+            "long_pause_ms": session.long_pause_ms,
+            "max_answer_seconds": session.max_answer_seconds,
+            "confirm_threshold": session.confirm_threshold,
+            "max_followups": session.max_followups,
         },
     }
 
@@ -616,6 +773,63 @@ def ask(payload: AskRequest) -> dict[str, Any]:
         stt_ms = round((time.perf_counter() - stt_started) * 1000, 1)
         candidate_text = transcription["text"]
         stt_confidence = transcription.get("confidence")
+
+    if session.confirmation_pending:
+        if is_confirmation_yes(candidate_text):
+            candidate_text = (session.pending_transcript or "").strip()
+            stt_confidence = session.pending_confidence
+            session.pending_transcript = None
+            session.pending_confidence = None
+            session.confirmation_pending = False
+            payload.stt_confirmed = True
+        elif is_confirmation_no(candidate_text):
+            session.pending_transcript = None
+            session.pending_confidence = None
+            session.confirmation_pending = False
+            session_store.save(payload.session_id, session)
+            return {
+                "candidate_text": "",
+                "reply": "Está bem. Repete a resposta com calma, por favor.",
+                "question": "",
+                "next_question": "",
+                "needs_confirmation": False,
+                "stt_confidence": stt_confidence,
+                "llm_ms": None,
+                "feedback": [],
+                "followups": [],
+            }
+        else:
+            session.pending_transcript = None
+            session.pending_confidence = None
+            session.confirmation_pending = False
+
+    if (
+        payload.capture_mode != "text"
+        and stt_confidence is not None
+        and stt_confidence < session.confirm_threshold
+        and not payload.stt_confirmed
+    ):
+        session.pending_transcript = candidate_text
+        session.pending_confidence = stt_confidence
+        session.confirmation_pending = True
+        session_store.save(payload.session_id, session)
+        quoted = candidate_text[:180] if candidate_text else "(sem texto)"
+        return {
+            "candidate_text": candidate_text,
+            "reply": f"Ouvi: «{quoted}». Está correto?",
+            "question": "",
+            "next_question": "",
+            "needs_confirmation": True,
+            "stt_confidence": stt_confidence,
+            "llm_ms": None,
+            "feedback": [],
+            "followups": [],
+        }
+
+    if not candidate_text:
+        raise HTTPException(400, "A transcrição não contém texto suficiente")
+    if payload.interrupted:
+        session.interruption_count += 1
     current_question = session.pending_question or session.questions[session.current_index]
     llm_started = time.perf_counter()
     try:
@@ -623,21 +837,51 @@ def ask(payload: AskRequest) -> dict[str, Any]:
     except (OSError, subprocess.SubprocessError, ValueError) as exc:
         raise HTTPException(503, f"LLM indisponível: {exc}") from exc
     llm_ms = round((time.perf_counter() - llm_started) * 1000, 1)
-    followup = usable_question(result.get("followups", [""])[0] if result.get("followups") else "")
-    if followup.casefold() == current_question.casefold():
-        followup = ""
+    result["reply"] = str(result.get("reply") or fallback_reply(str(result.get("question_kind", ""))))
+    result["covered"] = _clean_list(result.get("covered", []), 6)
+    result["missing"] = _clean_list(result.get("missing", []), 6)
+    candidate_question = usable_question(result.get("question"))
+    if not candidate_question:
+        candidate_question = usable_question(result.get("followups", [""])[0] if result.get("followups") else "")
+    if candidate_question.casefold() == current_question.casefold() or forbidden_question(candidate_question, session):
+        candidate_question = ""
+    kind = str(result.get("question_kind") or "").lower()
+    wants_followup = bool(candidate_question) and (kind in {"followup", "clarification"} or not result.get("should_advance", True))
+    if wants_followup and session.followup_count >= session.max_followups:
+        wants_followup = False
+        candidate_question = ""
     next_planned_index = min(session.current_index + 1, len(session.questions) - 1)
     next_planned = session.questions[next_planned_index] if session.questions and session.current_index + 1 < len(session.questions) else "Obrigado. Que perguntas tens para mim?"
-    if followup:
-        result["next_question"] = followup
-        session.pending_question = followup
+    if wants_followup:
+        result["question"] = candidate_question
+        result["next_question"] = candidate_question
+        result["question_kind"] = kind or "followup"
+        result["should_advance"] = False
+        session.pending_question = candidate_question
+        session.followup_count += 1
         result["is_followup"] = True
     else:
+        if forbidden_question(next_planned, session):
+            next_planned = "Podes dar um exemplo concreto dessa experiência?"
         session.pending_question = None
         session.current_index = min(session.current_index + 1, len(session.questions) - 1)
+        session.followup_count = 0
+        result["question"] = next_planned
+        result["question_kind"] = "planned" if "Obrigado" not in next_planned else "close"
+        result["should_advance"] = True
         result["next_question"] = next_planned
         result["is_followup"] = False
-    session.history.append({"question": current_question, "answer": candidate_text})
+    session.covered_topics = list(dict.fromkeys((session.covered_topics + result["covered"])[-24:]))
+    session.missing_topics = list(dict.fromkeys((session.missing_topics + result["missing"])[-24:]))
+    session.history.append({
+        "question": current_question,
+        "answer": candidate_text,
+        "reply": result["reply"],
+        "covered": result["covered"],
+        "missing": result["missing"],
+        "question_kind": result["question_kind"],
+        "stt_confidence": stt_confidence,
+    })
     session_store.save(payload.session_id, session)
     session_store.record_metric(
         payload.session_id,
@@ -649,16 +893,28 @@ def ask(payload: AskRequest) -> dict[str, Any]:
         stt_confidence=stt_confidence,
         capture_mode=payload.capture_mode,
         auto_submitted=payload.auto_submitted,
+        listen_ms=payload.listen_ms,
+        audio_ms=payload.audio_ms,
+        interruptions=session.interruption_count,
+        followup_count=session.followup_count,
+        stt_confirmed=payload.stt_confirmed,
     )
-    return {"candidate_text": candidate_text, "stt_confidence": stt_confidence, "llm_ms": llm_ms, **result}
+    return {
+        "candidate_text": candidate_text,
+        "stt_confidence": stt_confidence,
+        "llm_ms": llm_ms,
+        "needs_confirmation": False,
+        **result,
+    }
 
 
 @app.get("/api/session/{session_id}/metrics")
 def session_metrics(session_id: str) -> dict[str, Any]:
     session = session_store.get(session_id, Session)
-    if session is None:
+    metrics = session_store.metrics(session_id)
+    if session is None and not metrics:
         raise HTTPException(404, "session_id desconhecido")
-    return {"session_id": session_id, "metrics": session_store.metrics(session_id)}
+    return {"session_id": session_id, "metrics": metrics, "feedback": session_store.feedback(session_id)}
 
 
 @app.post("/stop")
@@ -666,8 +922,16 @@ def stop_session(payload: StopRequest) -> dict[str, Any]:
     session = session_store.get(payload.session_id, Session)
     if session is None:
         raise HTTPException(404, "session_id desconhecido")
+    feedback_values = payload.model_dump(exclude={"session_id"}, exclude_none=True)
+    if feedback_values:
+        session_store.save_feedback(payload.session_id, **feedback_values)
     session_store.delete(payload.session_id)
-    return {"summary": f"Sessão terminada após {len(session.history)} resposta(s).", "history": session.history}
+    return {
+        "summary": f"Sessão terminada após {len(session.history)} resposta(s).",
+        "history": session.history,
+        "metrics": session_store.metrics(payload.session_id),
+        "feedback": session_store.feedback(payload.session_id),
+    }
 
 
 @app.websocket("/ws/{session_id}")
@@ -684,6 +948,10 @@ async def interview_socket(websocket: WebSocket, session_id: str) -> None:
                     stt_confidence=message.get("stt_confidence"),
                     capture_mode=message.get("capture_mode", "text"),
                     auto_submitted=bool(message.get("auto_submitted", False)),
+                    listen_ms=message.get("listen_ms"),
+                    audio_ms=message.get("audio_ms"),
+                    stt_confirmed=bool(message.get("stt_confirmed", False)),
+                    interrupted=bool(message.get("interrupted", False)),
                 ),
             )
             await websocket.send_json(result)

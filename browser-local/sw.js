@@ -1,9 +1,12 @@
-const CACHE_NAME = 'northstar-local-shell-v3';
+const CACHE_NAME = 'northstar-local-shell-v4';
 const APP_FILES = [
   './',
   './index.html',
   './styles.css',
   './app.js',
+  './inference.worker.js',
+  './model-cache.js',
+  './model-manifest.json',
   './manifest.webmanifest',
   'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.2',
 ];
