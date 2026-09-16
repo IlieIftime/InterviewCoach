@@ -15,7 +15,7 @@ from typing import Any
 
 import requests
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -32,6 +32,9 @@ app.mount("/static", StaticFiles(directory=Path(__file__).resolve().parent / "st
 DEFAULT_OLLAMA_MODEL = "qwen2.5:1.5b-instruct"
 DEFAULT_BACKEND = "ollama"
 MAX_PROMPT_HISTORY = 3600
+DEFAULT_OLLAMA_GENERATE_URL = "http://127.0.0.1:11434/api/generate"
+PIPER_VOICE_DIR = Path(__file__).resolve().parent / "models" / "piper"
+DEFAULT_PIPER_VOICE = PIPER_VOICE_DIR / "pt_PT-tugao-medium.onnx"
 
 
 @dataclass
@@ -64,6 +67,11 @@ class AskRequest(BaseModel):
 class TranscribeRequest(BaseModel):
     audio_base64: str = Field(min_length=1)
     audio_format: str = "webm"
+
+
+class SpeakRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=1600)
+    language: str = "pt-PT"
 
 
 class StopRequest(BaseModel):
@@ -169,7 +177,7 @@ def call_ollama(prompt: str) -> dict[str, Any]:
 
     try:
         response = requests.post(
-            os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate"),
+            os.getenv("OLLAMA_URL", DEFAULT_OLLAMA_GENERATE_URL),
             json={
                 "model": model,
                 "prompt": prompt,
@@ -302,6 +310,53 @@ def transcribe_audio(encoded: str, audio_format: str) -> str:
         audio_path.unlink(missing_ok=True)
 
 
+def piper_voice_for(language: str) -> Path:
+    configured_voice = os.getenv("PIPER_VOICE")
+    if configured_voice:
+        return Path(configured_voice)
+    normalized = language.lower().replace("_", "-")
+    if normalized.startswith("en"):
+        english_voice = PIPER_VOICE_DIR / "en_US-lessac-medium.onnx"
+        return english_voice if english_voice.exists() else DEFAULT_PIPER_VOICE
+    return DEFAULT_PIPER_VOICE
+
+
+def synthesize_speech(text: str, language: str) -> bytes:
+    voice_path = piper_voice_for(language)
+    if not voice_path.exists():
+        raise HTTPException(
+            503,
+            f"Voz Piper não encontrada: {voice_path}. Executa .\\scripts\\download_piper_voice.ps1",
+        )
+    piper_executable = os.getenv("PIPER_EXE", "piper")
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as audio_file:
+        output_path = Path(audio_file.name)
+    try:
+        completed = subprocess.run(
+            [
+                piper_executable,
+                "--model",
+                str(voice_path),
+                "--output_file",
+                str(output_path),
+            ],
+            input=text.strip(),
+            capture_output=True,
+            text=True,
+            timeout=45,
+        )
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout or "Piper falhou sem detalhes.").strip()
+            raise HTTPException(503, f"Piper indisponível: {detail[:500]}")
+        return output_path.read_bytes()
+    except FileNotFoundError as exc:
+        raise HTTPException(503, "Executável Piper não encontrado. Confirma que piper-tts está instalado.") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(503, "Piper demorou demasiado a gerar a voz.") from exc
+    finally:
+        output_path.unlink(missing_ok=True)
+
+
 def backend_status() -> dict[str, Any]:
     configured_llama_url = os.getenv("LLAMA_SERVER_URL", "http://127.0.0.1:8080/v1/chat/completions")
     llama_url = configured_llama_url.split("/v1/", 1)[0] + "/health"
@@ -319,7 +374,7 @@ def backend_status() -> dict[str, Any]:
                 return {"backend": "offline", "available": False, "model": model, "label": "llama.cpp indisponível"}
     try:
         requests.get(ollama_url, timeout=1).raise_for_status()
-        return {"backend": "ollama", "available": True, "model": model, "label": f"Ollama · {model}"}
+        return {"backend": "ollama", "available": True, "model": model, "label": f"Ollama - {model}"}
     except requests.RequestException:
         return {"backend": "offline", "available": False, "model": model, "label": "Nenhum modelo ligado"}
 
@@ -333,6 +388,12 @@ def status() -> dict[str, Any]:
 def transcribe(payload: TranscribeRequest) -> dict[str, str]:
     text = transcribe_audio(payload.audio_base64, payload.audio_format)
     return {"text": text, "model": os.getenv("WHISPER_MODEL", "tiny")}
+
+
+@app.post("/speak")
+def speak(payload: SpeakRequest) -> Response:
+    audio = synthesize_speech(payload.text, payload.language)
+    return Response(content=audio, media_type="audio/wav")
 
 
 @app.get("/health")

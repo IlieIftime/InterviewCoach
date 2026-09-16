@@ -41,16 +41,27 @@ const setupView = $('setup-view');
 const chatView = $('chat-view');
 
 async function checkStatus() {
+  const label = $('status-label');
+  const dot = $('status-dot');
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 3000);
+  label.textContent = 'A ligar motor...';
+  dot.className = 'status-dot';
   try {
-    const status = await fetch('/api/status').then((r) => r.json());
-    $('status-label').textContent = status.label;
-    $('status-dot').className = `status-dot ${status.available ? 'online' : 'offline'}`;
+    const response = await fetch('/api/status', {cache: 'no-store', signal: controller.signal});
+    if (!response.ok) throw new Error(`Estado indisponivel (${response.status})`);
+    const status = await response.json();
+    label.textContent = status.label;
+    dot.className = `status-dot ${status.available ? 'online' : 'offline'}`;
+    if (!status.available) setTimeout(checkStatus, 5000);
   } catch (_) {
-    $('status-label').textContent = 'API indisponível';
-    $('status-dot').className = 'status-dot offline';
+    label.textContent = 'API indisponivel';
+    dot.className = 'status-dot offline';
+    setTimeout(checkStatus, 5000);
+  } finally {
+    clearTimeout(timeout);
   }
 }
-
 function renderQuestions() {
   $('question-count').textContent = `${Math.min(state.current + 1, state.questions.length)} / ${state.questions.length}`;
   $('question-list').innerHTML = state.questions.map((question, index) => `
@@ -159,9 +170,12 @@ async function speakAgent(text) {
     const response = await fetch('/speak', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({text}),
+      body: JSON.stringify({text, language: document.documentElement.lang || 'pt-PT'}),
     });
-    if (!response.ok) throw new Error('Piper indisponível');
+    if (!response.ok) {
+      const detail = await response.text();
+      throw new Error(detail || 'Piper indisponivel');
+    }
     const audioUrl = URL.createObjectURL(await response.blob());
     if (requestId !== voice.ttsRequestId) {
       URL.revokeObjectURL(audioUrl);
@@ -181,8 +195,11 @@ async function speakAgent(text) {
     audio.onended = finishAudio;
     audio.onerror = finishAudio;
     await audio.play();
-  } catch (_) {
-    if (requestId === voice.ttsRequestId) speakWithBrowser(text);
+  } catch (error) {
+    if (requestId === voice.ttsRequestId) {
+      setVoiceStatus(`Piper indisponivel; fallback browser. ${String(error.message || '').slice(0, 120)}`);
+      speakWithBrowser(text);
+    }
   }
 }
 
