@@ -1,0 +1,11 @@
+{
+  "name": "Northstar Local Coach",
+  "short_name": "Northstar Coach",
+  "description": "Private browser-local interview coach",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#101b1b",
+  "theme_color": "#101b1b",
+  "lang": "pt-PT",
+  "icons": []
+}

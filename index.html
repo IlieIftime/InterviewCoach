@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="pt-PT">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101b1b">
+  <link rel="manifest" href="manifest.webmanifest">
+  <title>Northstar Local Coach</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar"><a class="brand" href="."><span class="mark">N</span> northstar<span>.</span></a><div id="runtime" class="runtime">A preparar motor local</div></header>
+  <main>
+    <section id="setup" class="setup">
+      <div class="hero"><p class="kicker">BROWSER LOCAL / PRIVATE PRACTICE</p><h1>Treina sem sair<br><i>do dispositivo.</i></h1><p>O modelo é descarregado uma vez, guardado no browser e executado localmente. As respostas não precisam de sair desta máquina.</p><div class="capabilities"><span>cache local</span><span>WebGPU + WASM</span><span>sem servidor</span></div></div>
+      <form id="setup-form" class="panel">
+        <div class="panel-title"><span>01</span><h2>Configurar coach</h2></div>
+        <label>Persona<textarea id="persona" rows="2">Hiring Manager de uma equipa de ML Platform.</textarea></label>
+        <label>Instruções<textarea id="instructions" rows="3">Faz uma pergunta de cada vez. Alterna entre RH e técnica. Aprofunda respostas vagas. Dá feedback curto usando STAR quando fizer sentido.</textarea></label>
+        <label>Evitar<textarea id="avoid" rows="2">Não inventar experiência, não fazer avaliações oficiais, não escrever respostas longas.</textarea></label>
+        <label>Contexto do candidato<textarea id="context" rows="3" placeholder="Cola aqui informação do CV, vaga ou empresa..."></textarea></label>
+        <label>Perguntas iniciais <small>uma por linha</small><textarea id="questions" rows="4">Fala-me sobre o teu percurso e o que procuras agora.
+Qual foi o teu projeto técnico mais relevante?
+Como monitorizarias um modelo em produção?</textarea></label>
+        <button class="primary" type="submit">Preparar modelo local <b>→</b></button>
+        <div class="download-state"><div class="bar"><span id="progress"></span></div><p id="download-label">O download pode ocupar algumas centenas de MB na primeira vez.</p></div>
+      </form>
+    </section>
+    <section id="coach" class="coach hidden">
+      <aside class="rail"><div class="rail-label">SESSION</div><div id="steps"></div><button id="reset" class="ghost">+ Nova sessão</button></aside>
+      <section class="main-column"><div class="coach-head"><div><p class="kicker">LOCAL INTERVIEW ROOM</p><h2>Conversa em prática</h2><p id="listen-status" class="listen-status">Microfone desligado</p></div><div class="head-actions"><button id="listen" class="listen-button" type="button" aria-pressed="false">🎙 Escuta ativa</button><button id="microphone" class="microphone-button" type="button" aria-pressed="false">🎤 Microfone</button><button id="speak" class="round" title="Ler pergunta" aria-label="Ler pergunta">🔊</button></div></div><div id="messages" class="messages"></div><div id="busy" class="busy hidden">a pensar <i></i><i></i><i></i></div><form id="answer-form" class="answer"><textarea id="answer" rows="3" placeholder="Responde como responderias na entrevista..."></textarea><div><span id="answer-mode-hint">Escuta ativa envia depois de uma pausa</span><button class="send" type="submit">Enviar <b>↑</b></button></div></form></section>
+      <aside class="review"><div class="review-card score"><span class="label">QUALIDADE DA RESPOSTA</span><strong id="score">--</strong><span>/ 5</span><p id="rationale">O feedback aparece depois da primeira resposta.</p></div><div class="review-card"><span class="label">FEEDBACK</span><ul id="feedback"><li>Usa um exemplo concreto.</li><li>Explica o impacto.</li></ul></div><div class="review-card"><span class="label">FOLLOW-UP</span><p id="followup">A pergunta de aprofundamento aparece aqui.</p></div></aside>
+    </section>
+  </main>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
