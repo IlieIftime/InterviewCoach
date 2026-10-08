@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="pt-PT">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#08141f">
+  <title>Entrevistador APX · Conversa local</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Entrevistador APX"><span class="brand-mark">A</span><span>entrevistador<span class="brand-dot">APX</span></span></a>
+      <div class="status-pill"><span id="status-dot" class="status-dot"></span><span id="status-label">A verificar motor</span></div>
+      <label class="model-select-wrap"><span class="hint">Modelo</span><select id="model-select"></select></label>
+    </header>
+
+    <section id="setup-view" class="view setup-view">
+      <div class="intro-copy">
+        <p class="eyebrow">LOCAL INTERVIEW ROOM <span class="eyebrow-line"></span></p>
+        <h1>Treina como<br><em>se fosse real.</em></h1>
+        <p class="lede">Uma sala de entrevista local que ouve, aprofunda e responde com voz natural — sem interromper o teu raciocínio.</p>
+        <div class="hero-points"><span><i></i>voz local</span><span><i></i>follow-ups reais</span><span><i></i>feedback privado</span></div>
+        <div class="hero-note"><span class="hero-note-mark">↳</span><span>O agente adapta a próxima pergunta ao que acabaste de dizer.</span></div>
+      </div>
+
+      <form id="setup-form" class="setup-form">
+        <div class="form-heading"><span>01</span><div><h2>Prepara a sala</h2><p>Define o papel, o contexto e o tipo de conversa.</p></div></div>
+        <div class="form-grid">
+          <label>Idioma da entrevista<select id="language"><option value="pt-PT" selected>Português de Portugal</option><option value="en">English</option></select></label>
+          <label>Duração da entrevista <span class="hint">minutos</span><input id="duration-minutes" type="number" min="5" max="180" step="5" value="30"></label>
+        </div>
+        <label>Persona do entrevistador<textarea id="persona" rows="2" required>Talent Acquisition Partner e Hiring Manager de uma equipa de ML Platform.</textarea></label>
+        <label>Instruções e comportamentos<textarea id="instructions" rows="3" required>Faz perguntas naturais, alterna entre RH e técnica, aprofunda respostas vagas e dá feedback curto e acionável. Usa STAR quando fizer sentido.</textarea></label>
+        <div class="form-grid">
+          <label>Deve (must) <span class="hint">uma por linha</span><textarea id="must" rows="3">Fazer pelo menos um follow-up por resposta vaga.
+Adaptar o tom ao que o candidato disser.</textarea></label>
+          <label>Não deve (dont) <span class="hint">uma por linha</span><textarea id="avoid" rows="3">Não inventes experiência.
+Não dês avaliações oficiais.
+Não faças perguntas agressivas ou irrelevantes.</textarea></label>
+        </div>
+        <div class="form-grid">
+          <label>Perguntas a evitar <span class="hint">uma por linha</span><textarea id="questions-avoid" rows="3" placeholder="Ex.: perguntas sobre idade, estado civil..."></textarea></label>
+          <label>Informação adicional<textarea id="candidate-context" rows="3" placeholder="CV, empresa, vaga, pontos a praticar..."></textarea></label>
+        </div>
+        <label>Perguntas de partida <span class="hint">uma por linha</span><textarea id="questions" rows="4" required>Fala-me sobre o teu percurso e o que procuras agora.
+Qual foi o projeto técnico de que mais te orgulhas?
+Como explicarias uma falha num sistema de ML em produção?</textarea></label>
+        <div class="form-grid">
+          <label>Fidelidade ao roteiro <span class="hint"><span id="fidelity-value">50%</span> · 0% = livre, 100% = segue à letra</span><input id="script-fidelity" type="range" min="0" max="100" step="5" value="50"></label>
+          <label>Pausa mínima <span class="hint">segundos antes de considerar fim de fala</span><input id="min-pause" type="number" min="0.2" max="5" step="0.1" value="0.8"></label>
+        </div>
+        <button class="primary-button" type="submit"><span>Entrar na conversa</span><span class="button-arrow">↗</span></button>
+      </form>
+    </section>
+
+    <section id="chat-view" class="view chat-view hidden">
+      <aside class="sidebar">
+        <div class="sidebar-title"><span class="eyebrow">SESSION MAP</span><span id="question-count">0 / 0</span></div>
+        <div id="question-list" class="question-list"></div>
+        <div class="sidebar-bottom"><div class="sidebar-tip"><span>LOCAL</span><p>Whisper + Piper<br>sem cloud de voz</p></div><button id="new-session" class="text-button">+ Nova sessão</button></div>
+      </aside>
+
+      <section class="conversation-panel">
+        <div class="conversation-head"><div><p class="eyebrow">INTERVIEW ROOM <span class="live-mark">● LIVE LOCAL</span></p><h2 id="conversation-title">A tua sessão</h2></div><button id="end-session" class="end-button">Terminar</button></div>
+        <div id="messages" class="messages" aria-live="polite"></div>
+        <div id="thinking" class="thinking hidden"><span></span><span></span><span></span> a preparar a próxima pergunta</div>
+        <form id="answer-form" class="composer">
+          <textarea id="answer" rows="2" placeholder="Fala ou escreve a tua resposta..." aria-label="A tua resposta"></textarea>
+          <div class="composer-actions"><div class="composer-tools"><button type="button" id="active-listening" class="voice-mode-button" aria-pressed="false"><span class="voice-dot"></span> Escuta ativa</button><button type="button" id="voice-input" class="voice-mic-button" title="Ditar resposta" aria-label="Ditar resposta" aria-pressed="false">🎙 Microfone</button><button type="button" id="stt-mode" class="stt-mode-button" title="Alternar reconhecimento de voz" aria-label="Alternar reconhecimento de voz">STT browser</button><button type="button" id="read-aloud" class="icon-button" title="Ler pergunta em voz alta" aria-label="Ler pergunta em voz alta">🔊</button><span id="voice-status" class="input-hint" aria-live="polite">Microfone desligado</span><span class="input-hint shortcut">Ctrl + Enter para enviar</span></div><button class="send-button" type="submit">Enviar <span>↗</span></button></div>
+        </form>
+      </section>
+
+      <aside class="insights-panel">
+        <div class="insights-heading"><span class="eyebrow">COACHING LAYER</span><span>privado</span></div>
+        <div class="insight-card score-card"><div class="card-label">ÚLTIMA RESPOSTA</div><div class="score-row"><strong id="score">--</strong><span>/ 5</span></div><p id="notes">O feedback aparece aqui depois da tua primeira resposta.</p></div>
+        <div class="insight-card"><div class="card-label">FEEDBACK</div><ul id="feedback-list" class="feedback-list"><li>Responde com exemplos concretos.</li><li>Mostra impacto e reflexão.</li></ul></div>
+        <div class="insight-card followup-card"><div class="card-label">PARA APROFUNDAR</div><div id="followups" class="followups"><p>As perguntas de follow-up aparecem aqui.</p></div></div>
+      </aside>
+    </section>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>
