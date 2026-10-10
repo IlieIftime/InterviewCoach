@@ -72,7 +72,7 @@ InterviewCoach/
 
 ### 4.2 Environment Setup
 ```powershell
-cd C:\Users\iliei\Desktop\EntrevistadorAPX\Mistral-7B-GGUF
+cd C: - path choice
 py -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
@@ -169,5 +169,5 @@ Open `http://127.0.0.1:4173`. The first visit downloads the model; future visits
 ## 7. Known Issues & Notes
 
 *   **Git LFS:** The file `gitattributes` in the root lacks the leading dot (should be `.gitattributes`). Git is currently not applying LFS rules. It is recommended to rename this before the next commit.
-*   **Network Access:** For access from another device, start Uvicorn with `--host 0.0.0.0` and use the LAN address (e.g., `http://192.168.1.174:8000`). Keep behind a trusted local network until authentication and HTTPS are added.
+*   **Network Access:** For access from another device, start Uvicorn with `--host 0.0.0.0` and use the LAN address (e.g., `http://192.000.1.000:8000`). Keep behind a trusted local network until authentication and HTTPS are added.
 *   **Model Limitations:** The browser-local Qwen 0.5B model is less capable than Mistral 7B. It compensates with a deterministic interview rubric, short context windows, and immediate local feedback.
