@@ -1,4 +1,4 @@
-# Northstar Browser Local
+# Browser Local
 
 ## Iteracao de performance e integridade
 
@@ -23,7 +23,7 @@ cd C:\Users\iliei\Desktop\EntrevistadorAPX\Mistral-7B-GGUF\browser-local
 py -m http.server 4173
 ```
 
-Abrir `http://127.0.0.1:4173` e instalar a aplicação pelo menu do browser (`Instalar Northstar Local Coach`). Num dispositivo externo, serve esta pasta por HTTPS ou por um hosting estático e abre o URL nesse dispositivo.
+Abrir `http://127.0.0.1:4173` e instalar a aplicação pelo menu do browser (`Instalar The Hand of Zeus`). Num dispositivo externo, serve esta pasta por HTTPS ou por um hosting estático e abre o URL nesse dispositivo.
 
 ## Publicar no GitHub Pages
 
